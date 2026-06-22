@@ -22,13 +22,16 @@ requiredEnv.forEach((key) => {
 app.use(express.json());
 app.use(cookieParser());
 
-// ✅ PRODUCTION SAFE CORS
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
+    origin: [
+      "http://localhost:5173",
+      "https://biscuit-shop-kumarkhali.web.app",
+    ],
     credentials: true,
   }),
 );
+// "https://your-frontend-domain.vercel.app",
 
 const DB_NAME = process.env.DB_NAME || "biscuit_shop_db";
 
@@ -181,61 +184,21 @@ app.get("/", (req, res) => {
   });
 });
 
-// ====================== AUTH ======================
-
-// Login / Issue JWT
-
-app.post("/jwt", (req, res) => {
-  const { email } = req.body;
-
-  const token = jwt.sign({ email }, process.env.JWT_SECRET, {
-    expiresIn: "7d",
-  });
-
-  res.cookie("token", token, {
-    httpOnly: true,
-    secure: false, // ❗ localhost → false
-    sameSite: "lax", // ❗ VERY IMPORTANT
-  });
-
-  res.send({ success: true });
-});
-
-// Logout
-app.post("/logout", (req, res) => {
-  try {
-    const isProd = process.env.NODE_ENV === "production";
-
-    res.clearCookie("token", {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? "none" : "lax",
-    });
-
-    res.status(200).json({
-      success: true,
-      message: "Logged out successfully",
-    });
-  } catch (error) {
-    console.error("Logout error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Logout failed",
-    });
-  }
-});
 
 // ====================== PRODUCTS ======================
-
-// GET ALL PRODUCTS (public)
-app.get("/products", async (req, res) => {
+app.get("/products/:id", async (req, res) => {
   try {
-    const { page = 1, limit = 8, search = "" } = req.query;
+    const { id } = req.params;
 
-    const pageNumber = parseInt(page);
-    const limitNumber = parseInt(limit);
+    // ================= VALIDATION =================
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid product ID format",
+      });
+    }
 
+    // ================= DB CHECK =================
     if (!productsCollection) {
       return res.status(500).json({
         success: false,
@@ -243,41 +206,33 @@ app.get("/products", async (req, res) => {
       });
     }
 
-    // 🔍 search support
-    const query = search
-      ? {
-          name: { $regex: search, $options: "i" },
-        }
-      : {};
+    // ================= FETCH =================
+    const product = await productsCollection.findOne({
+      _id: new ObjectId(id),
+    });
 
-    const products = await productsCollection
-      .find(query)
-      .skip((pageNumber - 1) * limitNumber)
-      .limit(limitNumber)
-      .toArray();
+    // ================= NOT FOUND =================
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
 
-    const total = await productsCollection.countDocuments(query);
-
-    res.json({
+    // ================= SUCCESS =================
+    res.status(200).json({
       success: true,
-      data: products,
-      pagination: {
-        total,
-        page: pageNumber,
-        limit: limitNumber,
-        totalPages: Math.ceil(total / limitNumber),
-      },
+      data: product,
     });
   } catch (error) {
-    console.error("GET /products error:", error);
+    console.error("GET /products/:id ERROR:", error);
 
     res.status(500).json({
       success: false,
-      message: "Failed to fetch products",
+      message: "Failed to fetch product",
     });
   }
 });
-
 app.get("/products/my", verifyToken, async (req, res) => {
   try {
     const email = req.user?.email;
@@ -326,20 +281,13 @@ app.get("/products/my", verifyToken, async (req, res) => {
     });
   }
 });
-
-app.get("/products/:id", async (req, res) => {
+app.get("/products", async (req, res) => {
   try {
-    const { id } = req.params;
+    const { page = 1, limit = 8, search = "" } = req.query;
 
-    // ================= VALIDATION =================
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid product ID format",
-      });
-    }
+    const pageNumber = parseInt(page);
+    const limitNumber = parseInt(limit);
 
-    // ================= DB CHECK =================
     if (!productsCollection) {
       return res.status(500).json({
         success: false,
@@ -347,30 +295,37 @@ app.get("/products/:id", async (req, res) => {
       });
     }
 
-    // ================= FETCH =================
-    const product = await productsCollection.findOne({
-      _id: new ObjectId(id),
-    });
+    // 🔍 search support
+    const query = search
+      ? {
+          name: { $regex: search, $options: "i" },
+        }
+      : {};
 
-    // ================= NOT FOUND =================
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message: "Product not found",
-      });
-    }
+    const products = await productsCollection
+      .find(query)
+      .skip((pageNumber - 1) * limitNumber)
+      .limit(limitNumber)
+      .toArray();
 
-    // ================= SUCCESS =================
-    res.status(200).json({
+    const total = await productsCollection.countDocuments(query);
+
+    res.json({
       success: true,
-      data: product,
+      data: products,
+      pagination: {
+        total,
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.ceil(total / limitNumber),
+      },
     });
   } catch (error) {
-    console.error("GET /products/:id ERROR:", error);
+    console.error("GET /products error:", error);
 
     res.status(500).json({
       success: false,
-      message: "Failed to fetch product",
+      message: "Failed to fetch products",
     });
   }
 });
@@ -443,51 +398,8 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
     });
   }
 });
-// GET SINGLE PRODUCT
 
-// ADD PRODUCT (admin)
-
-app.post("/users", async (req, res) => {
-  try {
-    const user = req.body;
-
-    if (!user?.email) {
-      return res.status(400).send({ message: "Email required" });
-    }
-
-    const filter = { email: user.email };
-
-    const updateDoc = {
-      $set: {
-        name: user.name,
-        email: user.email,
-        photo: user.photo || "",
-        provider: user.provider || "password",
-        lastLogin: new Date(),
-      },
-      $setOnInsert: {
-        role: "user",
-        createdAt: new Date(),
-      },
-    };
-
-    const options = { upsert: true };
-
-    const result = await usersCollection.updateOne(filter, updateDoc, options);
-
-    res.status(200).json({
-      success: true,
-      message: "User saved successfully",
-      data: result,
-    });
-  } catch (error) {
-    console.error("POST /users error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-});
+//users realted api
 
 app.patch("/users/role/:id", async (req, res) => {
   try {
@@ -590,65 +502,50 @@ app.get("/users", verifyToken, async (req, res) => {
     });
   }
 });
+app.post("/users", async (req, res) => {
+  try {
+    const user = req.body;
 
-//======================CART======================
-// app.post("/carts", verifyToken, async (req, res) => {
-//   try {
-//     const { db } = await connectDB();
-//     const { productId, quantity = 1 } = req.body;
+    if (!user?.email) {
+      return res.status(400).send({ message: "Email required" });
+    }
 
-//     if (!productId) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "Product ID required",
-//       });
-//     }
+    const filter = { email: user.email };
 
-//     if (!ObjectId.isValid(productId)) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "Invalid product ID",
-//       });
-//     }
+    const updateDoc = {
+      $set: {
+        name: user.name,
+        email: user.email,
+        photo: user.photo || "",
+        provider: user.provider || "password",
+        lastLogin: new Date(),
+      },
+      $setOnInsert: {
+        role: "user",
+        createdAt: new Date(),
+      },
+    };
 
-//     const product = await db
-//       .collection("products")
-//       .findOne({ _id: new ObjectId(productId) });
+    const options = { upsert: true };
 
-//     if (!product) {
-//       return res.status(404).json({
-//         success: false,
-//         message: "Product not found",
-//       });
-//     }
+    const result = await usersCollection.updateOne(filter, updateDoc, options);
 
-//     const cartItem = {
-//       email: req.user.email,
-//       productId: new ObjectId(productId),
-//       name: product.name,
-//       price: product.price,
-//       image: product.image,
-//       discount: product.discount || 0,
-//       quantity: Number(quantity),
-//       createdAt: new Date(),
-//     };
+    res.status(200).json({
+      success: true,
+      message: "User saved successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("POST /users error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
 
-//     const result = await db.collection("carts").insertOne(cartItem);
-
-//     res.status(201).json({
-//       success: true,
-//       message: "Added to cart",
-//       data: result,
-//     });
-//   } catch (error) {
-//     console.error(error);
-//     res.status(500).json({
-//       success: false,
-//       message: "Failed to add to cart",
-//     });
-//   }
-// });
-app.get("/carts", verifyToken, async (req, res) => {
+// cart realted
+app.get("/carts", async (req, res) => {
   try {
     const email = req.user.email;
 
@@ -690,7 +587,7 @@ app.get("/carts", verifyToken, async (req, res) => {
   }
 });
 
-app.post("/carts", verifyToken, async (req, res) => {
+app.post("/carts", async (req, res) => {
   try {
     const email = req.user.email;
     const { productId, quantity = 1 } = req.body;
@@ -765,7 +662,7 @@ app.post("/carts", verifyToken, async (req, res) => {
   }
 });
 
-app.delete("/carts/:id", verifyToken, async (req, res) => {
+app.delete("/carts/:id", async (req, res) => {
   try {
     const email = req.user.email;
     const id = req.params.id;
@@ -794,6 +691,9 @@ app.delete("/carts/:id", verifyToken, async (req, res) => {
     });
   }
 });
+
+// Orders related api
+
 app.get("/orders", verifyToken, async (req, res) => {
   try {
     if (!ordersCollection) {
