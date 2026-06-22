@@ -100,13 +100,13 @@ export async function connectDB() {
 async function startServer() {
   try {
     await connectDB();
-    app.get("/", (req, res) => {
-      res.send("🚀 Server is running on localhost!");
-    });
+    // app.get("/", (req, res) => {
+    //   res.send("🚀 Server is running on localhost!");
+    // });
 
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-    });
+    // app.listen(PORT, () => {
+    //   console.log(`🚀 Server running on port ${PORT}`);
+    // });
   } catch (error) {
     console.error("Server failed to start:", error);
   }
@@ -1398,3 +1398,9 @@ app.get(
     }
   },
 );
+
+app.get("/", (req, res) => {
+  res.send("Biscuit Shop Server Running");
+});
+
+export default app;
