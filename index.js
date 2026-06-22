@@ -242,33 +242,7 @@ app.post("/logout", (req, res) => {
   }
 });
 
-// export const verifyToken = (req, res, next) => {
-//   const token = req.cookies?.token;
-
-//   if (!token) {
-//     return res.status(401).json({
-//       success: false,
-//       message: "Unauthorized access",
-//     });
-//   }
-
-//   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-//     if (err) {
-//       return res.status(403).json({
-//         success: false,
-//         message: "Invalid token",
-//       });
-//     }
-
-//     req.user = decoded;
-
-//     next();
-//   });
-// };
-
 // ====================== PRODUCTS ======================
-
-// Get all products
 app.get("/products", async (req, res) => {
   try {
     const { page = 1, limit = 8, search = "", category = "" } = req.query;
@@ -740,6 +714,7 @@ app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
     });
   }
 });
+
 // ====================== GET CART ======================
 app.get("/carts", verifyToken, async (req, res) => {
   try {
@@ -881,6 +856,77 @@ app.delete("/carts/:id", verifyToken, async (req, res) => {
     });
   }
 });
+
+// ====================== ADD TO CART ======================
+app.post("/carts", verifyToken, async (req, res) => {
+  try {
+    const email = req.user.email;
+
+    const {
+      productId,
+      name,
+      image,
+      price,
+      discount = 0,
+      quantity = 1,
+    } = req.body;
+
+    // already exists?
+    const existing = await cartsCollection.findOne({
+      email,
+      productId,
+    });
+
+    if (existing) {
+      await cartsCollection.updateOne(
+        {
+          _id: existing._id,
+        },
+        {
+          $inc: {
+            quantity: quantity,
+          },
+          $set: {
+            updatedAt: new Date(),
+          },
+        },
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: "Quantity updated",
+      });
+    }
+
+    const cartItem = {
+      email,
+      productId,
+      name,
+      image,
+      price,
+      discount,
+      quantity,
+      createdAt: new Date(),
+    };
+
+    const result = await cartsCollection.insertOne(cartItem);
+
+    res.status(201).json({
+      success: true,
+      insertedId: result.insertedId,
+      message: "Added to cart",
+    });
+  } catch (error) {
+    console.log(error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to add cart",
+    });
+  }
+});
+
+//Orders apis
 app.get("/orders", verifyToken, verifyAdmin, async (req, res) => {
   try {
     let { status = "all", page = 1, limit = 10, search = "" } = req.query;
