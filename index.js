@@ -3,23 +3,19 @@ import cors from "cors";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
+// const PDFDocument = require("pdfkit");
+import PDFDocument from "pdfkit";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ====================== MIDDLEWARE ======================
-const requiredEnv = ["DB_USERNAME", "DB_PASS", "JWT_SECRET", "CLIENT_URL"];
+// ================= MIDDLEWARE =================
 
-requiredEnv.forEach((key) => {
-  if (!process.env[key]) {
-    throw new Error(`❌ Missing env variable: ${key}`);
-  }
-});
-
-// ====================== MIDDLEWARE ======================
 app.use(express.json());
+
 app.use(cookieParser());
 
 app.use(
@@ -31,29 +27,40 @@ app.use(
     credentials: true,
   }),
 );
-// "https://your-frontend-domain.vercel.app",
+
+// ================= ENV CHECK =================
+
+const requiredEnv = ["DB_USERNAME", "DB_PASS", "JWT_SECRET"];
+
+requiredEnv.forEach((key) => {
+  if (!process.env[key]) {
+    throw new Error(`❌ Missing env variable: ${key}`);
+  }
+});
+
+// ================= DATABASE =================
 
 const DB_NAME = process.env.DB_NAME || "biscuit_shop_db";
 
-// ================= URI =================
 const uri = `mongodb+srv://${encodeURIComponent(
   process.env.DB_USERNAME,
 )}:${encodeURIComponent(
   process.env.DB_PASS,
 )}@cluster0.g29mryf.mongodb.net/${DB_NAME}?retryWrites=true&w=majority`;
 
-// ================= SINGLETON =================
 let client;
 let db;
 let isConnected = false;
 
-// ================= COLLECTIONS =================
+// collections
+
 export let productsCollection;
 export let usersCollection;
-export let ordersCollection;
 export let cartsCollection;
+export let ordersCollection;
 
 // ================= CONNECT DB =================
+
 export async function connectDB() {
   try {
     if (isConnected && db) {
@@ -67,41 +74,47 @@ export async function connectDB() {
         strict: true,
         deprecationErrors: true,
       },
-      maxPoolSize: 20,
-      serverSelectionTimeoutMS: 15000,
-      connectTimeoutMS: 15000,
     });
 
     await client.connect();
 
     db = client.db(DB_NAME);
 
-    // ================= COLLECTIONS =================
-
     productsCollection = db.collection("products");
     usersCollection = db.collection("users");
-    ordersCollection = db.collection("orders");
     cartsCollection = db.collection("carts");
+    ordersCollection = db.collection("orders");
 
-    // ================= HEALTH CHECK =================
     await db.command({ ping: 1 });
 
     isConnected = true;
 
-    console.log("✅ MongoDB Connected Successfully");
+    console.log("✅ MongoDB Connected");
 
     return db;
   } catch (error) {
-    console.error("❌ MongoDB Connection Error:", error);
-
-    isConnected = false;
-    db = null;
-
+    console.error(error);
     process.exit(1);
   }
 }
+async function startServer() {
+  try {
+    await connectDB();
+    app.get("/", (req, res) => {
+      res.send("🚀 Server is running on localhost!");
+    });
 
-// ====================== JWT HELPERS ======================
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error("Server failed to start:", error);
+  }
+}
+
+startServer();
+
+// ================= JWT =================
 
 export const createToken = (user) => {
   return jwt.sign(
@@ -116,201 +129,176 @@ export const createToken = (user) => {
   );
 };
 
-const verifyToken = (req, res, next) => {
+// ================= VERIFY TOKEN =================
+
+export const verifyToken = (req, res, next) => {
   const token = req.cookies?.token;
 
-  //   console.log("TOKEN:", token); // 🔍 debug
-
   if (!token) {
-    return res.status(403).json({ message: "No token" });
+    return res.status(401).send({
+      success: false,
+      message: "Unauthorized",
+    });
   }
 
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) {
-      return res.status(403).json({ message: "Invalid token" });
+      return res.status(403).send({
+        success: false,
+        message: "Invalid token",
+      });
     }
 
     req.user = decoded;
+
     next();
   });
 };
 
+// ================= VERIFY ADMIN =================
+
 export const verifyAdmin = async (req, res, next) => {
   try {
-    if (!req.user?.email) {
-      return res.status(401).json({
+    const user = await usersCollection.findOne({
+      email: req.user.email,
+    });
+
+    if (!user || user.role !== "admin") {
+      return res.status(403).send({
         success: false,
-        message: "Unauthorized user",
-      });
-    }
-
-    const { db } = await connectDB();
-
-    const user = await db
-      .collection("users")
-      .findOne({ email: req.user.email }, { projection: { role: 1 } });
-
-    if (!user) {
-      return res.status(403).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    if (user.role !== "admin") {
-      return res.status(403).json({
-        success: false,
-        message: "Admin only access",
+        message: "Admin only",
       });
     }
 
     next();
   } catch (error) {
-    console.error("verifyAdmin error:", error);
-
-    return res.status(500).json({
+    res.status(500).send({
       success: false,
       message: "Admin verification failed",
     });
   }
 };
+// ====================== AUTH ROUTES ======================
 
-// ====================== ROUTES ======================
-
-app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    message: "🍪 Biscuit API Running",
-  });
-});
-
-
-// ====================== PRODUCTS ======================
-app.get("/products/:id", async (req, res) => {
+// Generate JWT + Set Cookie
+app.post("/jwt", async (req, res) => {
   try {
-    const { id } = req.params;
+    const user = req.body;
 
-    // ================= VALIDATION =================
-    if (!ObjectId.isValid(id)) {
+    if (!user?.email) {
       return res.status(400).json({
         success: false,
-        message: "Invalid product ID format",
+        message: "Email is required",
       });
     }
 
-    // ================= DB CHECK =================
-    if (!productsCollection) {
-      return res.status(500).json({
-        success: false,
-        message: "Database not initialized",
-      });
-    }
-
-    // ================= FETCH =================
-    const product = await productsCollection.findOne({
-      _id: new ObjectId(id),
+    const token = createToken({
+      email: user.email,
+      role: user.role || "user",
     });
 
-    // ================= NOT FOUND =================
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message: "Product not found",
-      });
-    }
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
 
-    // ================= SUCCESS =================
     res.status(200).json({
       success: true,
-      data: product,
+      message: "Login successful",
+      token,
     });
   } catch (error) {
-    console.error("GET /products/:id ERROR:", error);
+    console.error("JWT ERROR:", error);
 
     res.status(500).json({
       success: false,
-      message: "Failed to fetch product",
+      message: "Failed to generate token",
     });
   }
 });
-app.get("/products/my", verifyToken, async (req, res) => {
+
+// Logout + Clear Cookie
+app.post("/logout", (req, res) => {
   try {
-    const email = req.user?.email;
+    res.clearCookie("token", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+    });
 
-    if (!email) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized user (no email in token)",
-      });
-    }
-
-    const page = Number(req.query.page || 1);
-    const limit = Number(req.query.limit || 6);
-
-    const pageNum = Math.max(1, page);
-    const limitNum = Math.min(50, Math.max(1, limit));
-    const skip = (pageNum - 1) * limitNum;
-
-    const query = { createdBy: email };
-
-    const [products, total] = await Promise.all([
-      productsCollection
-        .find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .toArray(),
-
-      productsCollection.countDocuments(query),
-    ]);
-
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
-      page: pageNum,
-      limit: limitNum,
-      total,
-      totalPages: Math.ceil(total / limitNum),
-      data: products,
+      message: "Logged out successfully",
     });
   } catch (error) {
-    console.error("PRODUCT MY ERROR:", error);
+    console.error("LOGOUT ERROR:", error);
 
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
-      message: "Server error while fetching products",
+      message: "Logout failed",
     });
   }
 });
+
+// export const verifyToken = (req, res, next) => {
+//   const token = req.cookies?.token;
+
+//   if (!token) {
+//     return res.status(401).json({
+//       success: false,
+//       message: "Unauthorized access",
+//     });
+//   }
+
+//   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+//     if (err) {
+//       return res.status(403).json({
+//         success: false,
+//         message: "Invalid token",
+//       });
+//     }
+
+//     req.user = decoded;
+
+//     next();
+//   });
+// };
+
+// ====================== PRODUCTS ======================
+
+// Get all products
 app.get("/products", async (req, res) => {
   try {
-    const { page = 1, limit = 8, search = "" } = req.query;
+    const { page = 1, limit = 8, search = "", category = "" } = req.query;
 
-    const pageNumber = parseInt(page);
-    const limitNumber = parseInt(limit);
+    const pageNumber = Math.max(1, parseInt(page));
+    const limitNumber = Math.max(1, parseInt(limit));
 
-    if (!productsCollection) {
-      return res.status(500).json({
-        success: false,
-        message: "Database not initialized",
-      });
+    const query = {};
+
+    if (search) {
+      query.name = {
+        $regex: search,
+        $options: "i",
+      };
     }
 
-    // 🔍 search support
-    const query = search
-      ? {
-          name: { $regex: search, $options: "i" },
-        }
-      : {};
+    if (category) {
+      query.category = category;
+    }
 
     const products = await productsCollection
       .find(query)
+      .sort({ createdAt: -1 })
       .skip((pageNumber - 1) * limitNumber)
       .limit(limitNumber)
       .toArray();
 
     const total = await productsCollection.countDocuments(query);
 
-    res.json({
+    res.status(200).json({
       success: true,
       data: products,
       pagination: {
@@ -330,15 +318,87 @@ app.get("/products", async (req, res) => {
   }
 });
 
-app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
+// Get single product
+app.get("/products/:id", async (req, res) => {
   try {
-    if (!req.user?.email) {
-      return res.status(401).json({
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
         success: false,
-        message: "Unauthorized",
+        message: "Invalid product ID",
       });
     }
 
+    const product = await productsCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: product,
+    });
+  } catch (error) {
+    console.error("GET /products/:id error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch product",
+    });
+  }
+});
+
+// Get my products
+app.get("/products/my", verifyToken, async (req, res) => {
+  try {
+    const email = req.user.email;
+
+    const page = Number(req.query.page || 1);
+    const limit = Number(req.query.limit || 8);
+
+    const skip = (page - 1) * limit;
+
+    const query = {
+      createdBy: email,
+    };
+
+    const products = await productsCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    const total = await productsCollection.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      data: products,
+    });
+  } catch (error) {
+    console.error("GET /products/my error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch products",
+    });
+  }
+});
+
+// Create Product
+app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
+  try {
     const {
       name,
       price,
@@ -362,7 +422,7 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    const product = {
+    const newProduct = {
       name: name.trim(),
       price: Number(price),
       stock: Number(stock),
@@ -382,139 +442,120 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
       updatedAt: new Date(),
     };
 
-    const result = await productsCollection.insertOne(product);
+    const result = await productsCollection.insertOne(newProduct);
 
-    return res.status(201).json({
+    res.status(201).json({
       success: true,
       message: "Product created successfully",
-      data: result,
+      insertedId: result.insertedId,
     });
   } catch (error) {
-    console.error("PRODUCT POST ERROR:", error);
+    console.error("POST /products error:", error);
 
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
-      message: "Internal server error",
+      message: "Failed to create product",
     });
   }
 });
 
-//users realted api
-
-app.patch("/users/role/:id", async (req, res) => {
+// Update Product
+app.patch("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    const id = req.params.id;
+    const { id } = req.params;
 
-    // ================= VALIDATION =================
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid user ID",
+        message: "Invalid ID",
       });
     }
 
-    if (!usersCollection) {
-      return res.status(500).json({
-        success: false,
-        message: "Database not initialized",
-      });
-    }
-
-    // ================= FIND USER =================
-    const user = await usersCollection.findOne({
-      _id: new ObjectId(id),
-    });
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    // ================= TOGGLE ROLE =================
-    const newRole = user.role === "admin" ? "user" : "admin";
-
-    const result = await usersCollection.updateOne(
-      { _id: new ObjectId(id) },
-      {
-        $set: {
-          role: newRole,
-          updatedAt: new Date(),
-        },
+    const updateDoc = {
+      $set: {
+        ...req.body,
+        updatedAt: new Date(),
       },
+    };
+
+    const result = await productsCollection.updateOne(
+      {
+        _id: new ObjectId(id),
+      },
+      updateDoc,
     );
 
     res.status(200).json({
       success: true,
-      message: `User role changed to ${newRole}`,
-      data: result,
-      newRole,
+      message: "Product updated successfully",
+      modifiedCount: result.modifiedCount,
     });
   } catch (error) {
-    console.error("PATCH /users/role ERROR:", error);
+    console.error("PATCH /products/:id error:", error);
 
     res.status(500).json({
       success: false,
-      message: error.message,
+      message: "Failed to update product",
     });
   }
 });
 
-app.get("/users", verifyToken, async (req, res) => {
+// Delete Product
+app.delete("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    const { page = 1, limit = 10, search = "" } = req.query;
+    const { id } = req.params;
 
-    const pageNumber = parseInt(page);
-    const limitNumber = parseInt(limit);
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ID",
+      });
+    }
 
-    const query = search
-      ? {
-          email: { $regex: search, $options: "i" },
-        }
-      : {};
+    const result = await productsCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
 
-    const users = await usersCollection
-      .find(query)
-      .sort({ createdAt: -1 })
-      .skip((pageNumber - 1) * limitNumber)
-      .limit(limitNumber)
-      .toArray();
-
-    const total = await usersCollection.countDocuments(query);
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
 
     res.status(200).json({
       success: true,
-      data: users,
-      pagination: {
-        total,
-        page: pageNumber,
-        limit: limitNumber,
-        totalPages: Math.ceil(total / limitNumber),
-      },
+      message: "Product deleted successfully",
     });
   } catch (error) {
-    console.error("GET /users error:", error);
+    console.error("DELETE /products/:id error:", error);
 
     res.status(500).json({
       success: false,
-      message: "Failed to fetch users",
+      message: "Failed to delete product",
     });
   }
 });
+
+// ====================== CREATE USER ======================
 app.post("/users", async (req, res) => {
   try {
     const user = req.body;
 
     if (!user?.email) {
-      return res.status(400).send({ message: "Email required" });
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
     }
 
-    const filter = { email: user.email };
+    const filter = {
+      email: user.email,
+    };
 
     const updateDoc = {
       $set: {
-        name: user.name,
+        name: user.name || "",
         email: user.email,
         photo: user.photo || "",
         provider: user.provider || "password",
@@ -526,7 +567,9 @@ app.post("/users", async (req, res) => {
       },
     };
 
-    const options = { upsert: true };
+    const options = {
+      upsert: true,
+    };
 
     const result = await usersCollection.updateOne(filter, updateDoc, options);
 
@@ -537,26 +580,180 @@ app.post("/users", async (req, res) => {
     });
   } catch (error) {
     console.error("POST /users error:", error);
+
     res.status(500).json({
       success: false,
       message: "Server error",
     });
   }
 });
+// ====================== GET USERS ======================
+app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 10, search = "" } = req.query;
 
-// cart realted
-app.get("/carts", async (req, res) => {
+    const pageNumber = Math.max(1, Number(page));
+    const limitNumber = Math.min(50, Number(limit));
+
+    const query = search
+      ? {
+          email: {
+            $regex: search,
+            $options: "i",
+          },
+        }
+      : {};
+
+    const users = await usersCollection
+      .find(query)
+      .sort({
+        createdAt: -1,
+      })
+      .skip((pageNumber - 1) * limitNumber)
+      .limit(limitNumber)
+      .toArray();
+
+    const total = await usersCollection.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      page: pageNumber,
+      limit: limitNumber,
+      total,
+      totalPages: Math.ceil(total / limitNumber),
+      data: users,
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch users",
+    });
+  }
+});
+// ====================== CHANGE USER ROLE ======================
+app.patch("/users/role/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID",
+      });
+    }
+
+    const user = await usersCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // Prevent changing own role
+    if (user.email === req.user.email) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot change your own role",
+      });
+    }
+
+    const newRole = user.role === "admin" ? "user" : "admin";
+
+    const result = await usersCollection.updateOne(
+      {
+        _id: new ObjectId(id),
+      },
+      {
+        $set: {
+          role: newRole,
+          updatedAt: new Date(),
+        },
+      },
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Role changed to ${newRole}`,
+      data: result,
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      success: false,
+      message: "Role update failed",
+    });
+  }
+});
+// ====================== DELETE USER ======================
+app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ID",
+      });
+    }
+
+    const user = await usersCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // Prevent deleting yourself
+    if (user.email === req.user.email) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot delete yourself",
+      });
+    }
+
+    const result = await usersCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "User deleted successfully",
+      deletedCount: result.deletedCount,
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      success: false,
+      message: "Delete failed",
+    });
+  }
+});
+// ====================== GET CART ======================
+app.get("/carts", verifyToken, async (req, res) => {
   try {
     const email = req.user.email;
 
-    const cart = await cartsCollection.find({ email }).toArray();
+    const cartItems = await cartsCollection.find({ email }).toArray();
 
     let totalItems = 0;
     let totalQuantity = 0;
     let totalPrice = 0;
 
-    const formattedCart = cart.map((item) => {
+    const formattedCart = cartItems.map((item) => {
       const price = item.price - (item.price * (item.discount || 0)) / 100;
+
       const subtotal = price * item.quantity;
 
       totalItems += 1;
@@ -570,7 +767,7 @@ app.get("/carts", async (req, res) => {
       };
     });
 
-    res.send({
+    res.status(200).json({
       success: true,
       data: formattedCart,
       summary: {
@@ -579,96 +776,81 @@ app.get("/carts", async (req, res) => {
         totalPrice: Number(totalPrice.toFixed(2)),
       },
     });
-  } catch (err) {
-    res.status(500).send({
+  } catch (error) {
+    console.error("GET CART ERROR:", error);
+
+    res.status(500).json({
       success: false,
-      message: err.message,
+      message: "Failed to fetch cart",
     });
   }
 });
-
-app.post("/carts", async (req, res) => {
+// ====================== UPDATE CART ======================
+app.patch("/carts/:id", verifyToken, async (req, res) => {
   try {
     const email = req.user.email;
-    const { productId, quantity = 1 } = req.body;
+    const { id } = req.params;
+    const { quantity } = req.body;
 
-    if (!ObjectId.isValid(productId)) {
-      return res.status(400).send({
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
         success: false,
-        message: "Invalid product ID",
-      });
-    }
-
-    const product = await productsCollection.findOne({
-      _id: new ObjectId(productId),
-    });
-
-    if (!product) {
-      return res.status(404).send({
-        success: false,
-        message: "Product not found",
+        message: "Invalid cart ID",
       });
     }
 
     const qty = Number(quantity);
-    if (isNaN(qty) || qty <= 0) {
-      return res.status(400).send({
+
+    if (isNaN(qty) || qty < 1) {
+      return res.status(400).json({
         success: false,
         message: "Invalid quantity",
       });
     }
 
-    const existing = await cartsCollection.findOne({
+    const cart = await cartsCollection.findOne({
+      _id: new ObjectId(id),
       email,
-      productId: new ObjectId(productId),
     });
 
-    if (existing) {
-      await cartsCollection.updateOne(
-        { _id: existing._id },
-        {
-          $inc: { quantity: qty },
-          $set: { updatedAt: new Date() },
-        },
-      );
-
-      return res.send({
-        success: true,
-        message: "Cart updated",
+    if (!cart) {
+      return res.status(404).json({
+        success: false,
+        message: "Cart item not found",
       });
     }
 
-    await cartsCollection.insertOne({
-      email,
-      productId: new ObjectId(productId),
-      name: product.name,
-      price: Number(product.price),
-      discount: Number(product.discount || 0),
-      image: product.image,
-      quantity: qty,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
+    await cartsCollection.updateOne(
+      { _id: new ObjectId(id), email },
+      {
+        $set: {
+          quantity: qty,
+          updatedAt: new Date(),
+        },
+      },
+    );
 
-    res.status(201).send({
+    res.status(200).json({
       success: true,
-      message: "Added to cart",
+      message: "Cart updated",
     });
-  } catch (err) {
-    res.status(500).send({
+  } catch (error) {
+    console.error("PATCH CART ERROR:", error);
+
+    res.status(500).json({
       success: false,
-      message: err.message,
+      message: "Failed to update cart",
     });
   }
 });
-
-app.delete("/carts/:id", async (req, res) => {
+// ====================== DELETE CART ITEM ======================
+app.delete("/carts/:id", verifyToken, async (req, res) => {
   try {
     const email = req.user.email;
-    const id = req.params.id;
+    const { id } = req.params;
 
     if (!ObjectId.isValid(id)) {
-      return res.status(400).send({
+      return res.status(400).json({
         success: false,
         message: "Invalid cart ID",
       });
@@ -679,50 +861,44 @@ app.delete("/carts/:id", async (req, res) => {
       email,
     });
 
-    res.send({
-      success: true,
-      message: "Item removed",
-      deletedCount: result.deletedCount,
-    });
-  } catch (err) {
-    res.status(500).send({
-      success: false,
-      message: err.message,
-    });
-  }
-});
-
-// Orders related api
-
-app.get("/orders", verifyToken, async (req, res) => {
-  try {
-    if (!ordersCollection) {
-      return res.status(500).send({
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
         success: false,
-        message: "DB not initialized. connectDB missing",
+        message: "Cart item not found",
       });
     }
 
+    res.status(200).json({
+      success: true,
+      message: "Item removed from cart",
+    });
+  } catch (error) {
+    console.error("DELETE CART ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete cart",
+    });
+  }
+});
+app.get("/orders", verifyToken, verifyAdmin, async (req, res) => {
+  try {
     let { status = "all", page = 1, limit = 10, search = "" } = req.query;
 
     const pageNum = Math.max(1, Number(page));
-    const limitNum = Math.min(50, Math.max(1, Number(limit)));
+    const limitNum = Math.min(50, Number(limit));
     const skip = (pageNum - 1) * limitNum;
 
     const query = {};
 
-    // ✅ STATUS FILTER
     if (status !== "all") {
       query.status = status;
     }
 
-    // ✅ SEARCH SAFE
-    if (search && search.trim() !== "") {
-      const safe = search.trim();
-
+    if (search) {
       query.$or = [
-        { email: { $regex: safe, $options: "i" } },
-        { "customer.phone": { $regex: safe, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+        { "customer.phone": { $regex: search, $options: "i" } },
       ];
     }
 
@@ -737,50 +913,76 @@ app.get("/orders", verifyToken, async (req, res) => {
       ordersCollection.countDocuments(query),
     ]);
 
-    res.status(200).send({
+    res.status(200).json({
       success: true,
       page: pageNum,
-      limit: limitNum,
       total,
       totalPages: Math.ceil(total / limitNum),
       data: orders,
     });
   } catch (error) {
-    console.error("❌ GET /orders error:", error);
+    console.error("GET ORDERS ERROR:", error);
 
-    res.status(500).send({
+    res.status(500).json({
       success: false,
-      message: error.message || "Internal Server Error",
+      message: "Failed to fetch orders",
     });
   }
 });
+app.get("/orders/my", verifyToken, async (req, res) => {
+  try {
+    const email = req.user.email;
 
+    const { status = "all" } = req.query;
+
+    const query = { email };
+
+    if (status !== "all") {
+      query.status = status;
+    }
+
+    const orders = await ordersCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      count: orders.length,
+      data: orders,
+    });
+  } catch (error) {
+    console.error("MY ORDERS ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch user orders",
+    });
+  }
+});
 app.post("/orders", verifyToken, async (req, res) => {
   const session = client.startSession();
 
   try {
-    const email = req.user?.email;
+    const email = req.user.email;
     const { customer } = req.body;
 
-    // ================= VALIDATION =================
     if (!customer?.name || !customer?.phone || !customer?.address) {
-      return res.status(400).send({
+      return res.status(400).json({
         success: false,
-        message: "Customer information required",
+        message: "Customer info required",
       });
     }
 
-    // ================= GET CART =================
     const cartItems = await cartsCollection.find({ email }).toArray();
 
     if (!cartItems.length) {
-      return res.status(400).send({
+      return res.status(400).json({
         success: false,
         message: "Cart is empty",
       });
     }
 
-    // ================= FETCH PRODUCTS SAFELY =================
     const itemsWithProducts = await Promise.all(
       cartItems.map(async (item) => {
         if (!ObjectId.isValid(item.productId)) return null;
@@ -794,8 +996,6 @@ app.post("/orders", verifyToken, async (req, res) => {
         const price =
           product.price - (product.price * (product.discount || 0)) / 100;
 
-        const subtotal = price * item.quantity;
-
         return {
           productId: product._id,
           name: product.name,
@@ -803,16 +1003,15 @@ app.post("/orders", verifyToken, async (req, res) => {
           discount: product.discount || 0,
           image: product.image,
           quantity: item.quantity,
-          subtotal: Number(subtotal.toFixed(2)),
+          subtotal: Number((price * item.quantity).toFixed(2)),
         };
       }),
     );
 
-    // ================= CLEAN ITEMS =================
     const safeItems = itemsWithProducts.filter(Boolean);
 
     if (!safeItems.length) {
-      return res.status(400).send({
+      return res.status(400).json({
         success: false,
         message: "No valid products in cart",
       });
@@ -820,7 +1019,6 @@ app.post("/orders", verifyToken, async (req, res) => {
 
     const total = safeItems.reduce((acc, item) => acc + item.subtotal, 0);
 
-    // ================= TRANSACTION =================
     await session.withTransaction(async () => {
       await ordersCollection.insertOne(
         {
@@ -829,6 +1027,7 @@ app.post("/orders", verifyToken, async (req, res) => {
           items: safeItems,
           total: Number(total.toFixed(2)),
           status: "pending",
+          paymentStatus: "unpaid",
           createdAt: new Date(),
           updatedAt: new Date(),
         },
@@ -838,29 +1037,28 @@ app.post("/orders", verifyToken, async (req, res) => {
       await cartsCollection.deleteMany({ email }, { session });
     });
 
-    res.status(201).send({
+    res.status(201).json({
       success: true,
       message: "Order placed successfully",
     });
   } catch (error) {
     console.error("ORDER ERROR:", error);
 
-    res.status(500).send({
+    res.status(500).json({
       success: false,
-      message: error.message || "Order failed",
+      message: "Order failed",
     });
   } finally {
     await session.endSession();
   }
 });
-
 app.patch("/orders/cancel/:id", verifyToken, async (req, res) => {
   try {
-    const email = req.user?.email;
-    const id = req.params.id;
+    const email = req.user.email;
+    const { id } = req.params;
 
     if (!ObjectId.isValid(id)) {
-      return res.status(400).send({
+      return res.status(400).json({
         success: false,
         message: "Invalid order ID",
       });
@@ -872,14 +1070,14 @@ app.patch("/orders/cancel/:id", verifyToken, async (req, res) => {
     });
 
     if (!order) {
-      return res.status(404).send({
+      return res.status(404).json({
         success: false,
         message: "Order not found",
       });
     }
 
     if (order.status !== "pending") {
-      return res.status(400).send({
+      return res.status(400).json({
         success: false,
         message: "Only pending orders can be cancelled",
       });
@@ -895,68 +1093,262 @@ app.patch("/orders/cancel/:id", verifyToken, async (req, res) => {
       },
     );
 
-    res.send({
+    res.status(200).json({
       success: true,
       message: "Order cancelled",
     });
   } catch (error) {
-    console.error(error);
+    console.error("CANCEL ERROR:", error);
 
-    res.status(500).send({
+    res.status(500).json({
       success: false,
       message: "Cancel failed",
     });
   }
 });
 
-app.get("/orders/my", verifyToken, async (req, res) => {
+app.get("/orders/invoice/:id", verifyToken, async (req, res) => {
   try {
-    const email = req.user?.email;
+    const { id } = req.params;
+    const email = req.user.email;
 
-    if (!email) {
-      return res.status(401).send({
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
         success: false,
-        message: "Unauthorized",
+        message: "Invalid order ID",
       });
     }
 
-    const { status = "all" } = req.query;
+    const order = await ordersCollection.findOne({
+      _id: new ObjectId(id),
+      email,
+    });
 
-    const query = { email };
-
-    if (status !== "all") {
-      query.status = status;
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
     }
 
-    const orders = await ordersCollection
-      .find(query)
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    res.status(200).send({
+    res.status(200).json({
       success: true,
-      count: orders.length,
-      data: orders,
+      invoice: {
+        invoiceId: order._id,
+        customer: order.customer,
+        items: order.items,
+        total: order.total,
+        status: order.status,
+        date: order.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("INVOICE ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to generate invoice",
+    });
+  }
+});
+app.patch("/orders/status/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const allowed = [
+      "pending",
+      "paid",
+      "processing",
+      "shipped",
+      "delivered",
+      "cancelled",
+    ];
+
+    if (!allowed.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status",
+      });
+    }
+
+    await ordersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          status,
+          updatedAt: new Date(),
+        },
+      },
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Order status updated",
     });
   } catch (error) {
     console.error(error);
 
-    res.status(500).send({
+    res.status(500).json({
       success: false,
-      message: "Failed to fetch orders",
+      message: "Status update failed",
     });
   }
 });
 
-// ====================== START ======================
-connectDB()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`🚀 Running on port ${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error("DB connection failed:", err);
-  });
+// ====================== INVOICE PDF ======================
+app.get("/orders/invoice/:id/pdf", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const email = req.user.email;
 
-export default app;
+    const order = await ordersCollection.findOne({
+      _id: new ObjectId(id),
+      email,
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
+    const doc = new PDFDocument({ margin: 40 });
+
+    res.setHeader("Content-Type", "application/pdf");
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=invoice-${id}.pdf`,
+    );
+
+    doc.pipe(res);
+
+    // HEADER
+    doc.fontSize(20).text("🍪 Biscuit Shop Invoice", {
+      align: "center",
+    });
+
+    doc.moveDown();
+
+    // CUSTOMER INFO
+    doc.fontSize(12).text(`Invoice ID: ${id}`);
+    doc.text(`Customer: ${order.customer.name}`);
+    doc.text(`Phone: ${order.customer.phone}`);
+    doc.text(`Address: ${order.customer.address}`);
+    doc.text(`Email: ${order.email}`);
+
+    doc.moveDown();
+
+    // ITEMS
+    doc.fontSize(14).text("Items:");
+
+    order.items.forEach((item, index) => {
+      doc
+        .fontSize(12)
+        .text(
+          `${index + 1}. ${item.name} - Qty: ${
+            item.quantity
+          } - Price: ${item.price} - Subtotal: ${item.subtotal}`,
+        );
+    });
+
+    doc.moveDown();
+
+    // TOTAL
+    doc.fontSize(16).text(`TOTAL: ৳ ${order.total}`, {
+      align: "right",
+    });
+
+    doc.moveDown();
+
+    doc.fontSize(10).text("Thank you for your purchase!", {
+      align: "center",
+    });
+
+    doc.end();
+  } catch (error) {
+    console.error("PDF ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "PDF generation failed",
+    });
+  }
+});
+// ====================== MONTHLY SALES ======================
+app.get(
+  "/admin/analytics/monthly-sales",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const orders = await ordersCollection.find().toArray();
+
+      const monthly = {};
+
+      orders.forEach((order) => {
+        const date = new Date(order.createdAt);
+        const month = `${date.getFullYear()}-${date.getMonth() + 1}`;
+
+        if (!monthly[month]) {
+          monthly[month] = 0;
+        }
+
+        monthly[month] += order.total;
+      });
+
+      const result = Object.keys(monthly).map((key) => ({
+        month: key,
+        sales: monthly[key],
+      }));
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: "Monthly analytics failed",
+      });
+    }
+  },
+);
+app.get(
+  "/admin/analytics/top-products",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const orders = await ordersCollection.find().toArray();
+
+      const productMap = {};
+
+      orders.forEach((order) => {
+        order.items.forEach((item) => {
+          if (!productMap[item.name]) {
+            productMap[item.name] = 0;
+          }
+          productMap[item.name] += item.quantity;
+        });
+      });
+
+      const result = Object.entries(productMap)
+        .map(([name, sold]) => ({ name, sold }))
+        .sort((a, b) => b.sold - a.sold)
+        .slice(0, 5);
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: "Top products failed",
+      });
+    }
+  },
+);
