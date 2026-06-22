@@ -1,16 +1,125 @@
+// import express from "express";
+// import cors from "cors";
+// import dotenv from "dotenv";
+// import cookieParser from "cookie-parser";
+// import jwt from "jsonwebtoken";
+// import PDFDocument from "pdfkit";
+// import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+
+// dotenv.config();
+
+// const app = express();
+// // const PORT = process.env.PORT || 5000;
+
+// // ================= MIDDLEWARE =================
+
+// app.use(express.json());
+
+// app.use(cookieParser());
+
+// app.use(
+//   cors({
+//     origin: [
+//       "http://localhost:5173",
+//       "https://biscuit-shop-kumarkhali.web.app",
+//     ],
+//     credentials: true,
+//   }),
+// );
+
+// // ================= ENV CHECK =================
+
+// const requiredEnv = ["DB_USERNAME", "DB_PASS", "JWT_SECRET"];
+
+// requiredEnv.forEach((key) => {
+//   if (!process.env[key]) {
+//     throw new Error(`❌ Missing env variable: ${key}`);
+//   }
+// });
+
+// // ================= DATABASE =================
+
+// const DB_NAME = process.env.DB_NAME || "biscuit_shop_db";
+
+// const uri = `mongodb+srv://${encodeURIComponent(
+//   process.env.DB_USERNAME,
+// )}:${encodeURIComponent(
+//   process.env.DB_PASS,
+// )}@cluster0.g29mryf.mongodb.net/${DB_NAME}?retryWrites=true&w=majority`;
+
+// let client;
+// let db;
+// let isConnected = false;
+
+// // collections
+
+// let productsCollection;
+// let usersCollection;
+// let cartsCollection;
+// let ordersCollection;
+
+// // ================= CONNECT DB =================
+
+// export async function connectDB() {
+//   try {
+//     if (isConnected && db) {
+//       console.log("⚡ MongoDB already connected");
+//       return db;
+//     }
+
+//     client = new MongoClient(uri, {
+//       serverApi: {
+//         version: ServerApiVersion.v1,
+//         strict: true,
+//         deprecationErrors: true,
+//       },
+//     });
+
+//     await client.connect();
+
+//     db = client.db(DB_NAME);
+
+//     productsCollection = db.collection("products");
+//     usersCollection = db.collection("users");
+//     cartsCollection = db.collection("carts");
+//     ordersCollection = db.collection("orders");
+
+//     await db.command({ ping: 1 });
+
+//     isConnected = true;
+
+//     console.log("✅ MongoDB Connected");
+
+//     return db;
+//   } catch (error) {
+//     console.error(error);
+//     process.exit(1);
+//   }
+// }
+// async function startServer() {
+//   try {
+//     await connectDB();
+
+//     // app.listen(PORT, () => {
+//     //   console.log(`🚀 Server running on port ${PORT}`);
+//     // });
+//   } catch (error) {
+//     console.error("Server failed to start:", error);
+//   }
+// }
+
+// startServer();
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
-// const PDFDocument = require("pdfkit");
 import PDFDocument from "pdfkit";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
 
 // ================= MIDDLEWARE =================
 
@@ -50,20 +159,19 @@ const uri = `mongodb+srv://${encodeURIComponent(
 
 let client;
 let db;
-let isConnected = false;
 
 // collections
 
-export let productsCollection;
-export let usersCollection;
-export let cartsCollection;
-export let ordersCollection;
+let productsCollection;
+let usersCollection;
+let cartsCollection;
+let ordersCollection;
 
 // ================= CONNECT DB =================
 
 export async function connectDB() {
   try {
-    if (isConnected && db) {
+    if (db) {
       console.log("⚡ MongoDB already connected");
       return db;
     }
@@ -87,32 +195,30 @@ export async function connectDB() {
 
     await db.command({ ping: 1 });
 
-    isConnected = true;
-
     console.log("✅ MongoDB Connected");
 
     return db;
   } catch (error) {
-    console.error(error);
-    process.exit(1);
-  }
-}
-async function startServer() {
-  try {
-    await connectDB();
-    // app.get("/", (req, res) => {
-    //   res.send("🚀 Server is running on localhost!");
-    // });
-
-    // app.listen(PORT, () => {
-    //   console.log(`🚀 Server running on port ${PORT}`);
-    // });
-  } catch (error) {
-    console.error("Server failed to start:", error);
+    console.error("❌ MongoDB Connection Error:", error);
+    throw error;
   }
 }
 
-startServer();
+// Initialize database connection
+connectDB();
+
+export {
+  app,
+  client,
+  db,
+  productsCollection,
+  usersCollection,
+  cartsCollection,
+  ordersCollection,
+  ObjectId,
+  jwt,
+  PDFDocument,
+};
 
 // ================= JWT =================
 
