@@ -94,6 +94,10 @@ export async function connectDB() {
   //     db.carts.deleteMany({
   //   name: null
   // });
+
+  // db.carts.deleteMany({})
+  // await cartsCollection.createIndex({ email: 1 });
+  // await cartsCollection.createIndex({ email: 1, productId: 1 });
 }
 
 // Initialize database connection
@@ -706,9 +710,17 @@ app.post("/carts", verifyToken, async (req, res) => {
 
     const qty = Math.max(1, Math.min(99, Number(quantity) || 1));
 
-    const product = await productsCollection.findOne({
-      _id: new ObjectId(productId),
-    });
+    const product = await productsCollection.findOne(
+      { _id: new ObjectId(productId) },
+      {
+        projection: {
+          name: 1,
+          image: 1,
+          price: 1,
+          discount: 1,
+        },
+      },
+    );
 
     if (!product) {
       return res.status(404).json({
@@ -717,21 +729,10 @@ app.post("/carts", verifyToken, async (req, res) => {
       });
     }
 
-    // ================= SAFE SNAPSHOT (VERY IMPORTANT) =================
-    const snapshot = {
-      name: product.name?.trim() || "Unknown Product",
-      image:
-        typeof product.image === "string" && product.image.trim()
-          ? product.image
-          : "https://via.placeholder.com/300",
-      price: Number(product.price || 0),
-      discount: Number(product.discount || 0),
-    };
+    const price = Number(product.price || 0);
+    const discount = Number(product.discount || 0);
 
-    const finalPrice = +(
-      snapshot.price -
-      (snapshot.price * snapshot.discount) / 100
-    ).toFixed(2);
+    const finalPrice = Number((price - (price * discount) / 100).toFixed(2));
 
     const existing = await cartsCollection.findOne({
       email,
@@ -739,50 +740,55 @@ app.post("/carts", verifyToken, async (req, res) => {
     });
 
     if (existing) {
-      const newQty = existing.quantity + qty;
+      const quantity = existing.quantity + qty;
 
-      return await cartsCollection
-        .updateOne(
-          { _id: existing._id },
-          {
-            $set: {
-              quantity: newQty,
-              updatedAt: new Date(),
-              ...snapshot,
-              finalPrice,
-              subtotal: +(finalPrice * newQty).toFixed(2),
-            },
+      await cartsCollection.updateOne(
+        { _id: existing._id },
+        {
+          $set: {
+            quantity,
+            subtotal: Number((quantity * finalPrice).toFixed(2)),
+            updatedAt: new Date(),
           },
-        )
-        .then(() => {
-          res.json({
-            success: true,
-            message: "Cart updated",
-          });
-        });
+        },
+      );
+
+      return res.json({
+        success: true,
+        message: "Cart updated",
+      });
     }
 
-    const result = await cartsCollection.insertOne({
+    const cart = {
       email,
       productId: new ObjectId(productId),
+
       quantity: qty,
 
-      ...snapshot,
+      name: product.name || "Unknown Product",
+      image: product.image || "https://via.placeholder.com/300",
+
+      price,
+      discount,
       finalPrice,
-      subtotal: +(finalPrice * qty).toFixed(2),
+
+      subtotal: Number((qty * finalPrice).toFixed(2)),
 
       createdAt: new Date(),
       updatedAt: new Date(),
-    });
+    };
 
-    res.status(201).json({
+    const result = await cartsCollection.insertOne(cart);
+
+    return res.status(201).json({
       success: true,
       insertedId: result.insertedId,
       message: "Added to cart",
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({
+
+    return res.status(500).json({
       success: false,
       message: "Failed to add cart",
     });
@@ -800,87 +806,42 @@ app.get("/carts", verifyToken, async (req, res) => {
     }
 
     const carts = await cartsCollection
-      .aggregate([
-        { $match: { email } },
-
+      .find(
+        { email },
         {
-          $lookup: {
-            from: "products",
-            localField: "productId",
-            foreignField: "_id",
-            as: "product",
+          projection: {
+            email: 0,
           },
         },
-
-        { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
-
-        {
-          $project: {
-            _id: 1,
-            email: 1,
-            productId: 1,
-            quantity: 1,
-
-            name: { $ifNull: ["$product.name", "Unknown Product"] },
-            image: {
-              $ifNull: ["$product.image", "https://via.placeholder.com/300"],
-            },
-
-            price: { $ifNull: ["$product.price", 0] },
-            discount: { $ifNull: ["$product.discount", 0] },
-
-            finalPrice: {
-              $cond: [
-                { $gt: ["$product.price", 0] },
-                {
-                  $subtract: [
-                    "$product.price",
-                    {
-                      $multiply: [
-                        "$product.price",
-                        { $divide: ["$product.discount", 100] },
-                      ],
-                    },
-                  ],
-                },
-                0,
-              ],
-            },
-          },
-        },
-      ])
+      )
+      .sort({ createdAt: -1 })
       .toArray();
 
-    let totalItems = carts.length;
-    let totalQuantity = 0;
-    let totalPrice = 0;
+    const summary = carts.reduce(
+      (acc, item) => {
+        acc.totalItems += 1;
+        acc.totalQuantity += Number(item.quantity || 0);
+        acc.totalPrice += Number(item.subtotal || 0);
 
-    const formatted = carts.map((item) => {
-      const finalPrice = Number(item.finalPrice || 0);
-      const quantity = Number(item.quantity || 0);
-
-      const subtotal = +(finalPrice * quantity).toFixed(2);
-
-      totalQuantity += quantity;
-      totalPrice += subtotal;
-
-      return {
-        ...item,
-        subtotal,
-      };
-    });
-
-    return res.status(200).json({
-      success: true,
-      data: formatted,
-      summary: {
-        totalItems,
-        totalQuantity,
-        totalPrice: +totalPrice.toFixed(2),
+        return acc;
       },
+      {
+        totalItems: 0,
+        totalQuantity: 0,
+        totalPrice: 0,
+      },
+    );
+
+    summary.totalPrice = Number(summary.totalPrice.toFixed(2));
+
+    return res.json({
+      success: true,
+      data: carts,
+      summary,
     });
   } catch (error) {
     console.error(error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch cart",
@@ -897,28 +858,35 @@ app.patch("/carts/:id", verifyToken, async (req, res) => {
     if (!email) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized user",
+        message: "Unauthorized",
       });
     }
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid cart ID",
+        message: "Invalid cart id",
       });
     }
 
-    if (!quantity || quantity < 1) {
+    if (quantity < 1 || quantity > 99) {
       return res.status(400).json({
         success: false,
-        message: "Quantity must be at least 1",
+        message: "Invalid quantity",
       });
     }
 
-    const cart = await cartsCollection.findOne({
-      _id: new ObjectId(id),
-      email,
-    });
+    const cart = await cartsCollection.findOne(
+      {
+        _id: new ObjectId(id),
+        email,
+      },
+      {
+        projection: {
+          finalPrice: 1,
+        },
+      },
+    );
 
     if (!cart) {
       return res.status(404).json({
@@ -927,11 +895,9 @@ app.patch("/carts/:id", verifyToken, async (req, res) => {
       });
     }
 
-    const finalPrice = Number(cart.finalPrice || 0);
+    const subtotal = Number((cart.finalPrice * quantity).toFixed(2));
 
-    const subtotal = Number((finalPrice * quantity).toFixed(2));
-
-    const result = await cartsCollection.updateOne(
+    await cartsCollection.updateOne(
       {
         _id: new ObjectId(id),
         email,
@@ -945,13 +911,12 @@ app.patch("/carts/:id", verifyToken, async (req, res) => {
       },
     );
 
-    return res.status(200).json({
+    return res.json({
       success: true,
-      message: "Cart updated successfully",
-      modifiedCount: result.modifiedCount,
+      message: "Cart updated",
     });
   } catch (error) {
-    console.error("PATCH CART ERROR:", error);
+    console.error(error);
 
     return res.status(500).json({
       success: false,
@@ -959,7 +924,6 @@ app.patch("/carts/:id", verifyToken, async (req, res) => {
     });
   }
 });
-
 app.delete("/carts/:id", verifyToken, async (req, res) => {
   try {
     const email = req.user?.email;
@@ -968,14 +932,14 @@ app.delete("/carts/:id", verifyToken, async (req, res) => {
     if (!email) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized user",
+        message: "Unauthorized",
       });
     }
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid cart ID",
+        message: "Invalid cart id",
       });
     }
 
@@ -984,24 +948,23 @@ app.delete("/carts/:id", verifyToken, async (req, res) => {
       email,
     });
 
-    if (result.deletedCount === 0) {
+    if (!result.deletedCount) {
       return res.status(404).json({
         success: false,
-        message: "Cart item not found or already deleted",
+        message: "Cart item not found",
       });
     }
 
-    return res.status(200).json({
+    return res.json({
       success: true,
-      message: "Item removed from cart",
-      deletedId: id,
+      message: "Item removed successfully",
     });
   } catch (error) {
-    console.error("DELETE CART ERROR:", error);
+    console.error(error);
 
     return res.status(500).json({
       success: false,
-      message: "Failed to delete cart",
+      message: "Failed to delete cart item",
     });
   }
 });
