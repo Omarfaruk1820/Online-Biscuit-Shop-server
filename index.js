@@ -717,30 +717,60 @@ app.post("/carts", verifyToken, async (req, res) => {
       });
     }
 
+    // ================= SAFE SNAPSHOT (VERY IMPORTANT) =================
+    const snapshot = {
+      name: product.name?.trim() || "Unknown Product",
+      image:
+        typeof product.image === "string" && product.image.trim()
+          ? product.image
+          : "https://via.placeholder.com/300",
+      price: Number(product.price || 0),
+      discount: Number(product.discount || 0),
+    };
+
+    const finalPrice = +(
+      snapshot.price -
+      (snapshot.price * snapshot.discount) / 100
+    ).toFixed(2);
+
     const existing = await cartsCollection.findOne({
       email,
       productId: new ObjectId(productId),
     });
 
     if (existing) {
-      await cartsCollection.updateOne(
-        { _id: existing._id },
-        {
-          $inc: { quantity: qty },
-          $set: { updatedAt: new Date() },
-        },
-      );
+      const newQty = existing.quantity + qty;
 
-      return res.status(200).json({
-        success: true,
-        message: "Cart updated",
-      });
+      return await cartsCollection
+        .updateOne(
+          { _id: existing._id },
+          {
+            $set: {
+              quantity: newQty,
+              updatedAt: new Date(),
+              ...snapshot,
+              finalPrice,
+              subtotal: +(finalPrice * newQty).toFixed(2),
+            },
+          },
+        )
+        .then(() => {
+          res.json({
+            success: true,
+            message: "Cart updated",
+          });
+        });
     }
 
     const result = await cartsCollection.insertOne({
       email,
       productId: new ObjectId(productId),
       quantity: qty,
+
+      ...snapshot,
+      finalPrice,
+      subtotal: +(finalPrice * qty).toFixed(2),
+
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -771,9 +801,8 @@ app.get("/carts", verifyToken, async (req, res) => {
 
     const carts = await cartsCollection
       .aggregate([
-        {
-          $match: { email },
-        },
+        { $match: { email } },
+
         {
           $lookup: {
             from: "products",
@@ -782,9 +811,9 @@ app.get("/carts", verifyToken, async (req, res) => {
             as: "product",
           },
         },
-        {
-          $unwind: "$product",
-        },
+
+        { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
+
         {
           $project: {
             _id: 1,
@@ -792,20 +821,29 @@ app.get("/carts", verifyToken, async (req, res) => {
             productId: 1,
             quantity: 1,
 
-            name: "$product.name",
-            image: "$product.image",
-            price: "$product.price",
-            discount: "$product.discount",
+            name: { $ifNull: ["$product.name", "Unknown Product"] },
+            image: {
+              $ifNull: ["$product.image", "https://via.placeholder.com/300"],
+            },
+
+            price: { $ifNull: ["$product.price", 0] },
+            discount: { $ifNull: ["$product.discount", 0] },
 
             finalPrice: {
-              $subtract: [
-                "$product.price",
+              $cond: [
+                { $gt: ["$product.price", 0] },
                 {
-                  $multiply: [
+                  $subtract: [
                     "$product.price",
-                    { $divide: ["$product.discount", 100] },
+                    {
+                      $multiply: [
+                        "$product.price",
+                        { $divide: ["$product.discount", 100] },
+                      ],
+                    },
                   ],
                 },
+                0,
               ],
             },
           },
@@ -819,14 +857,16 @@ app.get("/carts", verifyToken, async (req, res) => {
 
     const formatted = carts.map((item) => {
       const finalPrice = Number(item.finalPrice || 0);
-      const quantity = Number(item.quantity || 1);
+      const quantity = Number(item.quantity || 0);
+
+      const subtotal = +(finalPrice * quantity).toFixed(2);
 
       totalQuantity += quantity;
-      totalPrice += finalPrice * quantity;
+      totalPrice += subtotal;
 
       return {
         ...item,
-        subtotal: +(finalPrice * quantity).toFixed(2),
+        subtotal,
       };
     });
 
