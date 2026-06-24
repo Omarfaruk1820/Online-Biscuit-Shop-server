@@ -1,114 +1,3 @@
-// import express from "express";
-// import cors from "cors";
-// import dotenv from "dotenv";
-// import cookieParser from "cookie-parser";
-// import jwt from "jsonwebtoken";
-// import PDFDocument from "pdfkit";
-// import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
-
-// dotenv.config();
-
-// const app = express();
-// // const PORT = process.env.PORT || 5000;
-
-// // ================= MIDDLEWARE =================
-
-// app.use(express.json());
-
-// app.use(cookieParser());
-
-// app.use(
-//   cors({
-//     origin: [
-//       "http://localhost:5173",
-//       "https://biscuit-shop-kumarkhali.web.app",
-//     ],
-//     credentials: true,
-//   }),
-// );
-
-// // ================= ENV CHECK =================
-
-// const requiredEnv = ["DB_USERNAME", "DB_PASS", "JWT_SECRET"];
-
-// requiredEnv.forEach((key) => {
-//   if (!process.env[key]) {
-//     throw new Error(`❌ Missing env variable: ${key}`);
-//   }
-// });
-
-// // ================= DATABASE =================
-
-// const DB_NAME = process.env.DB_NAME || "biscuit_shop_db";
-
-// const uri = `mongodb+srv://${encodeURIComponent(
-//   process.env.DB_USERNAME,
-// )}:${encodeURIComponent(
-//   process.env.DB_PASS,
-// )}@cluster0.g29mryf.mongodb.net/${DB_NAME}?retryWrites=true&w=majority`;
-
-// let client;
-// let db;
-// let isConnected = false;
-
-// // collections
-
-// let productsCollection;
-// let usersCollection;
-// let cartsCollection;
-// let ordersCollection;
-
-// // ================= CONNECT DB =================
-
-// export async function connectDB() {
-//   try {
-//     if (isConnected && db) {
-//       console.log("⚡ MongoDB already connected");
-//       return db;
-//     }
-
-//     client = new MongoClient(uri, {
-//       serverApi: {
-//         version: ServerApiVersion.v1,
-//         strict: true,
-//         deprecationErrors: true,
-//       },
-//     });
-
-//     await client.connect();
-
-//     db = client.db(DB_NAME);
-
-//     productsCollection = db.collection("products");
-//     usersCollection = db.collection("users");
-//     cartsCollection = db.collection("carts");
-//     ordersCollection = db.collection("orders");
-
-//     await db.command({ ping: 1 });
-
-//     isConnected = true;
-
-//     console.log("✅ MongoDB Connected");
-
-//     return db;
-//   } catch (error) {
-//     console.error(error);
-//     process.exit(1);
-//   }
-// }
-// async function startServer() {
-//   try {
-//     await connectDB();
-
-//     // app.listen(PORT, () => {
-//     //   console.log(`🚀 Server running on port ${PORT}`);
-//     // });
-//   } catch (error) {
-//     console.error("Server failed to start:", error);
-//   }
-// }
-
-// startServer();
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -202,6 +91,9 @@ export async function connectDB() {
     console.error("❌ MongoDB Connection Error:", error);
     throw error;
   }
+  //     db.carts.deleteMany({
+  //   name: null
+  // });
 }
 
 // Initialize database connection
@@ -351,54 +243,70 @@ app.post("/logout", (req, res) => {
 // ====================== PRODUCTS ======================
 app.get("/products", async (req, res) => {
   try {
-    const { page = 1, limit = 8, search = "", category = "" } = req.query;
+    let { page = 1, limit = 8, search = "", category = "" } = req.query;
 
-    const pageNumber = Math.max(1, parseInt(page));
-    const limitNumber = Math.max(1, parseInt(limit));
+    // =========================
+    // SAFE NUMBER CONVERSION
+    // =========================
+    page = Math.max(1, parseInt(page) || 1);
 
+    // ⚡ limit cap (VERY IMPORTANT for VERCEL)
+    limit = Math.min(20, Math.max(1, parseInt(limit) || 8));
+
+    const skip = (page - 1) * limit;
+
+    // =========================
+    // BUILD QUERY SAFELY
+    // =========================
     const query = {};
 
-    if (search) {
+    if (search && search.trim()) {
+      const cleanSearch = search.trim();
+
       query.name = {
-        $regex: search,
+        $regex: cleanSearch,
         $options: "i",
       };
     }
 
-    if (category) {
-      query.category = category;
+    if (category && category.trim()) {
+      query.category = category.trim().toLowerCase();
     }
 
+    // =========================
+    // FETCH DATA (FAST QUERY)
+    // =========================
     const products = await productsCollection
       .find(query)
-      .sort({ createdAt: -1 })
-      .skip((pageNumber - 1) * limitNumber)
-      .limit(limitNumber)
+      .sort({ _id: -1 }) // ⚡ FASTER than createdAt (no index dependency)
+      .skip(skip)
+      .limit(limit)
       .toArray();
 
+    // =========================
+    // COUNT (optional optimization)
+    // =========================
     const total = await productsCollection.countDocuments(query);
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: products,
       pagination: {
         total,
-        page: pageNumber,
-        limit: limitNumber,
-        totalPages: Math.ceil(total / limitNumber),
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
       },
     });
   } catch (error) {
-    console.error("GET /products error:", error);
+    console.error("PRODUCTS API ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to fetch products",
     });
   }
 });
-
-// Get single product
 app.get("/products/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -410,9 +318,10 @@ app.get("/products/:id", async (req, res) => {
       });
     }
 
-    const product = await productsCollection.findOne({
-      _id: new ObjectId(id),
-    });
+    const product = await productsCollection.findOne(
+      { _id: new ObjectId(id) },
+      { projection: { __v: 0 } },
+    );
 
     if (!product) {
       return res.status(404).json({
@@ -427,7 +336,6 @@ app.get("/products/:id", async (req, res) => {
     });
   } catch (error) {
     console.error("GET /products/:id error:", error);
-
     res.status(500).json({
       success: false,
       message: "Failed to fetch product",
@@ -435,48 +343,6 @@ app.get("/products/:id", async (req, res) => {
   }
 });
 
-// Get my products
-app.get("/products/my", verifyToken, async (req, res) => {
-  try {
-    const email = req.user.email;
-
-    const page = Number(req.query.page || 1);
-    const limit = Number(req.query.limit || 8);
-
-    const skip = (page - 1) * limit;
-
-    const query = {
-      createdBy: email,
-    };
-
-    const products = await productsCollection
-      .find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .toArray();
-
-    const total = await productsCollection.countDocuments(query);
-
-    res.status(200).json({
-      success: true,
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-      data: products,
-    });
-  } catch (error) {
-    console.error("GET /products/my error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch products",
-    });
-  }
-});
-
-// Create Product
 app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const {
@@ -485,7 +351,7 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
       stock = 0,
       image = "",
       rating = 4.5,
-      category = "biscuit",
+      category = "cookies",
       reviews = 0,
       brand = "",
       weight = "",
@@ -507,16 +373,15 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
       price: Number(price),
       stock: Number(stock),
       image: image.trim(),
-      rating: Number(rating),
-      category,
+      rating: Math.min(5, Math.max(0, Number(rating))),
+      category: category.toLowerCase(),
       reviews: Number(reviews),
       brand: brand.trim(),
-      weight: weight.trim(),
-      description: description.trim(),
-      ingredients: ingredients.trim(),
+      weight,
+      description,
+      ingredients,
       expiry,
-      discount: Number(discount),
-
+      discount: Math.min(100, Math.max(0, Number(discount))),
       createdBy: req.user.email,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -531,15 +396,12 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error("POST /products error:", error);
-
     res.status(500).json({
       success: false,
       message: "Failed to create product",
     });
   }
 });
-
-// Update Product
 app.patch("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -551,18 +413,21 @@ app.patch("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    const updateDoc = {
-      $set: {
-        ...req.body,
-        updatedAt: new Date(),
-      },
-    };
+    // ❌ block dangerous fields
+    const { _id, createdAt, createdBy, ...safeUpdates } = req.body;
+
+    if (safeUpdates.price) safeUpdates.price = Number(safeUpdates.price);
+    if (safeUpdates.stock) safeUpdates.stock = Number(safeUpdates.stock);
+    if (safeUpdates.rating) safeUpdates.rating = Number(safeUpdates.rating);
 
     const result = await productsCollection.updateOne(
+      { _id: new ObjectId(id) },
       {
-        _id: new ObjectId(id),
+        $set: {
+          ...safeUpdates,
+          updatedAt: new Date(),
+        },
       },
-      updateDoc,
     );
 
     res.status(200).json({
@@ -572,7 +437,6 @@ app.patch("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error("PATCH /products/:id error:", error);
-
     res.status(500).json({
       success: false,
       message: "Failed to update product",
@@ -580,7 +444,6 @@ app.patch("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-// Delete Product
 app.delete("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -609,7 +472,6 @@ app.delete("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error("DELETE /products/:id error:", error);
-
     res.status(500).json({
       success: false,
       message: "Failed to delete product",
@@ -822,33 +684,176 @@ app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // ====================== GET CART ======================
+app.post("/carts", verifyToken, async (req, res) => {
+  try {
+    const email = req.user?.email;
+
+    if (!email) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    const { productId, quantity = 1 } = req.body;
+
+    if (!ObjectId.isValid(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid product id",
+      });
+    }
+
+    // Product Find
+    const product = await productsCollection.findOne({
+      _id: new ObjectId(productId),
+    });
+
+    console.log("PRODUCT FOUND:", JSON.stringify(product, null, 2));
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+
+    const name = product?.name?.trim() || "Unknown Product";
+
+    const image = product?.image?.trim() || "https://via.placeholder.com/300";
+
+    const price = Number(product?.price || 0);
+
+    const discount = Number(product?.discount || 0);
+
+    const finalPrice = Number((price - (price * discount) / 100).toFixed(2));
+
+    const qty = Math.max(1, Math.min(99, Number(quantity) || 1));
+
+    const existing = await cartsCollection.findOne({
+      email,
+      productId: new ObjectId(productId),
+    });
+
+    // Update Existing Cart
+    if (existing) {
+      const newQty = existing.quantity + qty;
+
+      const subtotal = Number((finalPrice * newQty).toFixed(2));
+
+      await cartsCollection.updateOne(
+        {
+          _id: existing._id,
+        },
+        {
+          $set: {
+            name,
+            image,
+            price,
+            discount,
+            finalPrice,
+            quantity: newQty,
+            subtotal,
+            updatedAt: new Date(),
+          },
+        },
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: "Cart updated successfully",
+      });
+    }
+
+    // New Cart Item
+    const cartItem = {
+      email,
+      productId: new ObjectId(productId),
+
+      name,
+      image,
+
+      price,
+      discount,
+      finalPrice,
+
+      quantity: qty,
+      subtotal: Number((finalPrice * qty).toFixed(2)),
+
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    console.log("CART ITEM:", JSON.stringify(cartItem, null, 2));
+
+    const result = await cartsCollection.insertOne(cartItem);
+
+    return res.status(201).json({
+      success: true,
+      insertedId: result.insertedId,
+      message: `${name} added to cart`,
+    });
+  } catch (error) {
+    console.error("POST CART ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to add cart",
+      error: error.message,
+    });
+  }
+});
 app.get("/carts", verifyToken, async (req, res) => {
   try {
-    const email = req.user.email;
+    const email = req.user?.email;
 
-    const cartItems = await cartsCollection.find({ email }).toArray();
+    if (!email) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
+
+    const cartItems = await cartsCollection
+      .find({ email })
+      .sort({ _id: -1 })
+      .toArray();
 
     let totalItems = 0;
     let totalQuantity = 0;
     let totalPrice = 0;
 
     const formattedCart = cartItems.map((item) => {
-      const price = item.price - (item.price * (item.discount || 0)) / 100;
+      const quantity = Number(item.quantity || 1);
 
-      const subtotal = price * item.quantity;
+      const subtotal = Number(item.subtotal || 0);
 
       totalItems += 1;
-      totalQuantity += item.quantity;
+      totalQuantity += quantity;
       totalPrice += subtotal;
 
       return {
-        ...item,
-        finalPrice: Number(price.toFixed(2)),
-        subtotal: Number(subtotal.toFixed(2)),
+        _id: item._id,
+        productId: item.productId,
+        email: item.email,
+
+        name: item.name || "Unknown Product",
+
+        image: item.image || "https://via.placeholder.com/300",
+
+        price: Number(item.price || 0),
+
+        discount: Number(item.discount || 0),
+
+        finalPrice: Number(item.finalPrice || 0),
+
+        quantity,
+
+        subtotal,
       };
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: formattedCart,
       summary: {
@@ -860,18 +865,25 @@ app.get("/carts", verifyToken, async (req, res) => {
   } catch (error) {
     console.error("GET CART ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to fetch cart",
     });
   }
 });
-// ====================== UPDATE CART ======================
 app.patch("/carts/:id", verifyToken, async (req, res) => {
   try {
-    const email = req.user.email;
+    const email = req.user?.email;
     const { id } = req.params;
-    const { quantity } = req.body;
+
+    const quantity = Number(req.body.quantity);
+
+    if (!email) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
@@ -880,12 +892,10 @@ app.patch("/carts/:id", verifyToken, async (req, res) => {
       });
     }
 
-    const qty = Number(quantity);
-
-    if (isNaN(qty) || qty < 1) {
+    if (!quantity || quantity < 1) {
       return res.status(400).json({
         success: false,
-        message: "Invalid quantity",
+        message: "Quantity must be at least 1",
       });
     }
 
@@ -897,38 +907,54 @@ app.patch("/carts/:id", verifyToken, async (req, res) => {
     if (!cart) {
       return res.status(404).json({
         success: false,
-        message: "Cart item not found",
+        message: "Cart not found",
       });
     }
 
-    await cartsCollection.updateOne(
-      { _id: new ObjectId(id), email },
+    const finalPrice = Number(cart.finalPrice || 0);
+
+    const subtotal = Number((finalPrice * quantity).toFixed(2));
+
+    const result = await cartsCollection.updateOne(
+      {
+        _id: new ObjectId(id),
+        email,
+      },
       {
         $set: {
-          quantity: qty,
+          quantity,
+          subtotal,
           updatedAt: new Date(),
         },
       },
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "Cart updated",
+      message: "Cart updated successfully",
+      modifiedCount: result.modifiedCount,
     });
   } catch (error) {
     console.error("PATCH CART ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to update cart",
     });
   }
 });
-// ====================== DELETE CART ITEM ======================
+
 app.delete("/carts/:id", verifyToken, async (req, res) => {
   try {
-    const email = req.user.email;
+    const email = req.user?.email;
     const { id } = req.params;
+
+    if (!email) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
@@ -945,89 +971,21 @@ app.delete("/carts/:id", verifyToken, async (req, res) => {
     if (result.deletedCount === 0) {
       return res.status(404).json({
         success: false,
-        message: "Cart item not found",
+        message: "Cart item not found or already deleted",
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: "Item removed from cart",
+      deletedId: id,
     });
   } catch (error) {
     console.error("DELETE CART ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to delete cart",
-    });
-  }
-});
-
-// ====================== ADD TO CART ======================
-app.post("/carts", verifyToken, async (req, res) => {
-  try {
-    const email = req.user.email;
-
-    const {
-      productId,
-      name,
-      image,
-      price,
-      discount = 0,
-      quantity = 1,
-    } = req.body;
-
-    // already exists?
-    const existing = await cartsCollection.findOne({
-      email,
-      productId,
-    });
-
-    if (existing) {
-      await cartsCollection.updateOne(
-        {
-          _id: existing._id,
-        },
-        {
-          $inc: {
-            quantity: quantity,
-          },
-          $set: {
-            updatedAt: new Date(),
-          },
-        },
-      );
-
-      return res.status(200).json({
-        success: true,
-        message: "Quantity updated",
-      });
-    }
-
-    const cartItem = {
-      email,
-      productId,
-      name,
-      image,
-      price,
-      discount,
-      quantity,
-      createdAt: new Date(),
-    };
-
-    const result = await cartsCollection.insertOne(cartItem);
-
-    res.status(201).json({
-      success: true,
-      insertedId: result.insertedId,
-      message: "Added to cart",
-    });
-  } catch (error) {
-    console.log(error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to add cart",
     });
   }
 });
