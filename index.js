@@ -704,12 +704,11 @@ app.post("/carts", verifyToken, async (req, res) => {
       });
     }
 
-    // Product Find
+    const qty = Math.max(1, Math.min(99, Number(quantity) || 1));
+
     const product = await productsCollection.findOne({
       _id: new ObjectId(productId),
     });
-
-    console.log("PRODUCT FOUND:", JSON.stringify(product, null, 2));
 
     if (!product) {
       return res.status(404).json({
@@ -718,88 +717,44 @@ app.post("/carts", verifyToken, async (req, res) => {
       });
     }
 
-    const name = product?.name?.trim() || "Unknown Product";
-
-    const image = product?.image?.trim() || "https://via.placeholder.com/300";
-
-    const price = Number(product?.price || 0);
-
-    const discount = Number(product?.discount || 0);
-
-    const finalPrice = Number((price - (price * discount) / 100).toFixed(2));
-
-    const qty = Math.max(1, Math.min(99, Number(quantity) || 1));
-
     const existing = await cartsCollection.findOne({
       email,
       productId: new ObjectId(productId),
     });
 
-    // Update Existing Cart
     if (existing) {
-      const newQty = existing.quantity + qty;
-
-      const subtotal = Number((finalPrice * newQty).toFixed(2));
-
       await cartsCollection.updateOne(
+        { _id: existing._id },
         {
-          _id: existing._id,
-        },
-        {
-          $set: {
-            name,
-            image,
-            price,
-            discount,
-            finalPrice,
-            quantity: newQty,
-            subtotal,
-            updatedAt: new Date(),
-          },
+          $inc: { quantity: qty },
+          $set: { updatedAt: new Date() },
         },
       );
 
       return res.status(200).json({
         success: true,
-        message: "Cart updated successfully",
+        message: "Cart updated",
       });
     }
 
-    // New Cart Item
-    const cartItem = {
+    const result = await cartsCollection.insertOne({
       email,
       productId: new ObjectId(productId),
-
-      name,
-      image,
-
-      price,
-      discount,
-      finalPrice,
-
       quantity: qty,
-      subtotal: Number((finalPrice * qty).toFixed(2)),
-
       createdAt: new Date(),
       updatedAt: new Date(),
-    };
+    });
 
-    console.log("CART ITEM:", JSON.stringify(cartItem, null, 2));
-
-    const result = await cartsCollection.insertOne(cartItem);
-
-    return res.status(201).json({
+    res.status(201).json({
       success: true,
       insertedId: result.insertedId,
-      message: `${name} added to cart`,
+      message: "Added to cart",
     });
   } catch (error) {
-    console.error("POST CART ERROR:", error);
-
-    return res.status(500).json({
+    console.error(error);
+    res.status(500).json({
       success: false,
       message: "Failed to add cart",
-      error: error.message,
     });
   }
 });
@@ -810,61 +765,82 @@ app.get("/carts", verifyToken, async (req, res) => {
     if (!email) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized user",
+        message: "Unauthorized",
       });
     }
 
-    const cartItems = await cartsCollection
-      .find({ email })
-      .sort({ _id: -1 })
+    const carts = await cartsCollection
+      .aggregate([
+        {
+          $match: { email },
+        },
+        {
+          $lookup: {
+            from: "products",
+            localField: "productId",
+            foreignField: "_id",
+            as: "product",
+          },
+        },
+        {
+          $unwind: "$product",
+        },
+        {
+          $project: {
+            _id: 1,
+            email: 1,
+            productId: 1,
+            quantity: 1,
+
+            name: "$product.name",
+            image: "$product.image",
+            price: "$product.price",
+            discount: "$product.discount",
+
+            finalPrice: {
+              $subtract: [
+                "$product.price",
+                {
+                  $multiply: [
+                    "$product.price",
+                    { $divide: ["$product.discount", 100] },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      ])
       .toArray();
 
-    let totalItems = 0;
+    let totalItems = carts.length;
     let totalQuantity = 0;
     let totalPrice = 0;
 
-    const formattedCart = cartItems.map((item) => {
+    const formatted = carts.map((item) => {
+      const finalPrice = Number(item.finalPrice || 0);
       const quantity = Number(item.quantity || 1);
 
-      const subtotal = Number(item.subtotal || 0);
-
-      totalItems += 1;
       totalQuantity += quantity;
-      totalPrice += subtotal;
+      totalPrice += finalPrice * quantity;
 
       return {
-        _id: item._id,
-        productId: item.productId,
-        email: item.email,
-
-        name: item.name || "Unknown Product",
-
-        image: item.image || "https://via.placeholder.com/300",
-
-        price: Number(item.price || 0),
-
-        discount: Number(item.discount || 0),
-
-        finalPrice: Number(item.finalPrice || 0),
-
-        quantity,
-
-        subtotal,
+        ...item,
+        subtotal: +(finalPrice * quantity).toFixed(2),
       };
     });
 
     return res.status(200).json({
       success: true,
-      data: formattedCart,
+      data: formatted,
       summary: {
         totalItems,
         totalQuantity,
-        totalPrice: Number(totalPrice.toFixed(2)),
+        totalPrice: +totalPrice.toFixed(2),
       },
     });
   } catch (error) {
-    console.error("GET CART ERROR:", error);
-
+    console.error(error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch cart",
