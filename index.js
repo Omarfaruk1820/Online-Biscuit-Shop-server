@@ -10,7 +10,9 @@ dotenv.config();
 
 const app = express();
 
-// ================= MIDDLEWARE =================
+/* ======================================
+   MIDDLEWARE
+====================================== */
 
 app.use(express.json());
 
@@ -26,17 +28,21 @@ app.use(
   }),
 );
 
-// ================= ENV CHECK =================
+/* ======================================
+   ENV CHECK
+====================================== */
 
 const requiredEnv = ["DB_USERNAME", "DB_PASS", "JWT_SECRET"];
 
-requiredEnv.forEach((key) => {
-  if (!process.env[key]) {
-    throw new Error(`❌ Missing env variable: ${key}`);
+requiredEnv.forEach((env) => {
+  if (!process.env[env]) {
+    throw new Error(`❌ Missing ENV Variable: ${env}`);
   }
 });
 
-// ================= DATABASE =================
+/* ======================================
+   DATABASE CONFIG
+====================================== */
 
 const DB_NAME = process.env.DB_NAME || "biscuit_shop_db";
 
@@ -44,21 +50,25 @@ const uri = `mongodb+srv://${encodeURIComponent(
   process.env.DB_USERNAME,
 )}:${encodeURIComponent(
   process.env.DB_PASS,
-)}@cluster0.g29mryf.mongodb.net/${DB_NAME}?retryWrites=true&w=majority`;
+)}@cluster0.g29mryf.mongodb.net/?retryWrites=true&w=majority`;
+
+/* ======================================
+   DATABASE VARIABLES
+====================================== */
 
 let client;
 let db;
-
-// collections
 
 let productsCollection;
 let usersCollection;
 let cartsCollection;
 let ordersCollection;
 
-// ================= CONNECT DB =================
+/* ======================================
+   CONNECT DATABASE
+====================================== */
 
-export async function connectDB() {
+export const connectDB = async () => {
   try {
     if (db) {
       console.log("⚡ MongoDB already connected");
@@ -68,7 +78,6 @@ export async function connectDB() {
     client = new MongoClient(uri, {
       serverApi: {
         version: ServerApiVersion.v1,
-        strict: true,
         deprecationErrors: true,
       },
     });
@@ -84,24 +93,77 @@ export async function connectDB() {
 
     await db.command({ ping: 1 });
 
-    console.log("✅ MongoDB Connected");
+    console.log("✅ MongoDB Connected Successfully");
+
+    /* ======================================
+       INDEXES
+    ====================================== */
+
+    // USERS
+    await usersCollection.createIndex({ email: 1 }, { unique: true });
+
+    // PRODUCTS
+    await productsCollection.createIndex({
+      category: 1,
+    });
+
+    // CARTS
+    await cartsCollection.createIndex(
+      {
+        email: 1,
+        productId: 1,
+      },
+      {
+        unique: true,
+      },
+    );
+
+    // ORDERS
+    await ordersCollection.createIndex({
+      createdAt: -1,
+    });
+
+    await ordersCollection.createIndex({
+      email: 1,
+    });
+
+    await ordersCollection.createIndex({
+      status: 1,
+    });
+
+    console.log("✅ Database Indexes Ready");
 
     return db;
   } catch (error) {
     console.error("❌ MongoDB Connection Error:", error);
     throw error;
   }
-  //     db.carts.deleteMany({
-  //   name: null
-  // });
+};
 
-  // db.carts.deleteMany({})
-  // await cartsCollection.createIndex({ email: 1 });
-  // await cartsCollection.createIndex({ email: 1, productId: 1 });
-}
+/* ======================================
+   INITIALIZE DATABASE
+====================================== */
 
-// Initialize database connection
-connectDB();
+await connectDB();
+
+/* ======================================
+   GRACEFUL SHUTDOWN
+====================================== */
+
+process.on("SIGINT", async () => {
+  try {
+    console.log("🔴 Closing MongoDB Connection...");
+    await client?.close();
+    process.exit(0);
+  } catch (error) {
+    console.error(error);
+    process.exit(1);
+  }
+});
+
+/* ======================================
+   EXPORTS
+====================================== */
 
 export {
   app,
@@ -115,14 +177,16 @@ export {
   jwt,
   PDFDocument,
 };
-
 // ================= JWT =================
 
-export const createToken = (user) => {
+/* ==========================================
+   JWT HELPERS
+========================================== */
+
+export const createToken = (payload) => {
   return jwt.sign(
     {
-      email: user.email,
-      role: user.role,
+      email: payload.email,
     },
     process.env.JWT_SECRET,
     {
@@ -131,33 +195,48 @@ export const createToken = (user) => {
   );
 };
 
-// ================= VERIFY TOKEN =================
+/* ==========================================
+   VERIFY TOKEN
+========================================== */
 
 export const verifyToken = (req, res, next) => {
-  const token = req.cookies?.token;
+  try {
+    let token = req.cookies?.token;
 
-  if (!token) {
-    return res.status(401).send({
-      success: false,
-      message: "Unauthorized",
-    });
-  }
+    // fallback for mobile apps / postman
+    if (!token) {
+      const authHeader = req.headers.authorization;
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) {
-      return res.status(403).send({
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        token = authHeader.split(" ")[1];
+      }
+    }
+
+    if (!token) {
+      return res.status(401).json({
         success: false,
-        message: "Invalid token",
+        message: "Unauthorized Access",
       });
     }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     req.user = decoded;
 
     next();
-  });
+  } catch (error) {
+    console.error("VERIFY TOKEN ERROR:", error);
+
+    return res.status(403).json({
+      success: false,
+      message: "Invalid Token",
+    });
+  }
 };
 
-// ================= VERIFY ADMIN =================
+/* ==========================================
+   VERIFY ADMIN
+========================================== */
 
 export const verifyAdmin = async (req, res, next) => {
   try {
@@ -165,81 +244,104 @@ export const verifyAdmin = async (req, res, next) => {
       email: req.user.email,
     });
 
-    if (!user || user.role !== "admin") {
-      return res.status(403).send({
+    if (!user) {
+      return res.status(404).json({
         success: false,
-        message: "Admin only",
+        message: "User not found",
+      });
+    }
+
+    if (user.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Admin Only Route",
       });
     }
 
     next();
   } catch (error) {
-    res.status(500).send({
+    console.error("VERIFY ADMIN ERROR:", error);
+
+    return res.status(500).json({
       success: false,
-      message: "Admin verification failed",
+      message: "Admin Verification Failed",
     });
   }
 };
-// ====================== AUTH ROUTES ======================
 
-// Generate JWT + Set Cookie
+/* ==========================================
+   LOGIN / JWT
+========================================== */
+
 app.post("/jwt", async (req, res) => {
   try {
-    const user = req.body;
+    const { email } = req.body;
 
-    if (!user?.email) {
+    if (!email) {
       return res.status(400).json({
         success: false,
-        message: "Email is required",
+        message: "Email Required",
       });
     }
 
+    const existingUser = await usersCollection.findOne({
+      email,
+    });
+
     const token = createToken({
-      email: user.email,
-      role: user.role || "user",
+      email,
     });
 
     res.cookie("token", token, {
       httpOnly: true,
+
       secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "Login successful",
       token,
+      role: existingUser?.role || "user",
+      message: "Login Successful",
     });
   } catch (error) {
-    console.error("JWT ERROR:", error);
+    console.error("JWT ROUTE ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Failed to generate token",
+      message: "Failed To Generate JWT",
     });
   }
 });
 
-// Logout + Clear Cookie
+/* ==========================================
+   LOGOUT
+========================================== */
+
 app.post("/logout", (req, res) => {
   try {
     res.clearCookie("token", {
       httpOnly: true,
+
       secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "Logged out successfully",
+      message: "Logged Out Successfully",
     });
   } catch (error) {
     console.error("LOGOUT ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Logout failed",
+      message: "Logout Failed",
     });
   }
 });
@@ -247,50 +349,43 @@ app.post("/logout", (req, res) => {
 // ====================== PRODUCTS ======================
 app.get("/products", async (req, res) => {
   try {
+    if (!productsCollection) {
+      return res.status(500).json({
+        success: false,
+        message: "Database not connected",
+      });
+    }
+
     let { page = 1, limit = 8, search = "", category = "" } = req.query;
 
-    // =========================
-    // SAFE NUMBER CONVERSION
-    // =========================
-    page = Math.max(1, parseInt(page) || 1);
-
-    // ⚡ limit cap (VERY IMPORTANT for VERCEL)
-    limit = Math.min(20, Math.max(1, parseInt(limit) || 8));
+    page = Math.max(1, Number(page) || 1);
+    limit = Math.min(20, Math.max(1, Number(limit) || 8));
 
     const skip = (page - 1) * limit;
 
-    // =========================
-    // BUILD QUERY SAFELY
-    // =========================
     const query = {};
 
-    if (search && search.trim()) {
-      const cleanSearch = search.trim();
-
+    if (search?.trim()) {
       query.name = {
-        $regex: cleanSearch,
+        $regex: search.trim(),
         $options: "i",
       };
     }
 
-    if (category && category.trim()) {
+    if (category?.trim()) {
       query.category = category.trim().toLowerCase();
     }
 
-    // =========================
-    // FETCH DATA (FAST QUERY)
-    // =========================
-    const products = await productsCollection
-      .find(query)
-      .sort({ _id: -1 }) // ⚡ FASTER than createdAt (no index dependency)
-      .skip(skip)
-      .limit(limit)
-      .toArray();
+    const [products, total] = await Promise.all([
+      productsCollection
+        .find(query)
+        .sort({ _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .toArray(),
 
-    // =========================
-    // COUNT (optional optimization)
-    // =========================
-    const total = await productsCollection.countDocuments(query);
+      productsCollection.countDocuments(query),
+    ]);
 
     return res.status(200).json({
       success: true,
@@ -303,7 +398,7 @@ app.get("/products", async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("PRODUCTS API ERROR:", error);
+    console.error("GET PRODUCTS ERROR:", error);
 
     return res.status(500).json({
       success: false,
@@ -318,35 +413,34 @@ app.get("/products/:id", async (req, res) => {
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid product ID",
+        message: "Invalid Product ID",
       });
     }
 
-    const product = await productsCollection.findOne(
-      { _id: new ObjectId(id) },
-      { projection: { __v: 0 } },
-    );
+    const product = await productsCollection.findOne({
+      _id: new ObjectId(id),
+    });
 
     if (!product) {
       return res.status(404).json({
         success: false,
-        message: "Product not found",
+        message: "Product Not Found",
       });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: product,
     });
   } catch (error) {
-    console.error("GET /products/:id error:", error);
-    res.status(500).json({
+    console.error("GET PRODUCT ERROR:", error);
+
+    return res.status(500).json({
       success: false,
-      message: "Failed to fetch product",
+      message: "Failed To Fetch Product",
     });
   }
 });
-
 app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const {
@@ -365,10 +459,17 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
       discount = 0,
     } = req.body;
 
-    if (!name || price == null) {
+    if (!name?.trim()) {
       return res.status(400).json({
         success: false,
-        message: "Name and price required",
+        message: "Product Name Required",
+      });
+    }
+
+    if (isNaN(price)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid Price",
       });
     }
 
@@ -377,7 +478,7 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
       price: Number(price),
       stock: Number(stock),
       image: image.trim(),
-      rating: Math.min(5, Math.max(0, Number(rating))),
+      rating: Number(rating),
       category: category.toLowerCase(),
       reviews: Number(reviews),
       brand: brand.trim(),
@@ -385,7 +486,7 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
       description,
       ingredients,
       expiry,
-      discount: Math.min(100, Math.max(0, Number(discount))),
+      discount: Number(discount),
       createdBy: req.user.email,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -393,16 +494,17 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
 
     const result = await productsCollection.insertOne(newProduct);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: "Product created successfully",
       insertedId: result.insertedId,
+      message: "Product Created Successfully",
     });
   } catch (error) {
-    console.error("POST /products error:", error);
-    res.status(500).json({
+    console.error("CREATE PRODUCT ERROR:", error);
+
+    return res.status(500).json({
       success: false,
-      message: "Failed to create product",
+      message: "Failed To Create Product",
     });
   }
 });
@@ -413,41 +515,53 @@ app.patch("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid ID",
+        message: "Invalid Product ID",
       });
     }
 
-    // ❌ block dangerous fields
-    const { _id, createdAt, createdBy, ...safeUpdates } = req.body;
+    const { _id, createdAt, createdBy, ...updates } = req.body;
 
-    if (safeUpdates.price) safeUpdates.price = Number(safeUpdates.price);
-    if (safeUpdates.stock) safeUpdates.stock = Number(safeUpdates.stock);
-    if (safeUpdates.rating) safeUpdates.rating = Number(safeUpdates.rating);
+    if (updates.price !== undefined) {
+      updates.price = Number(updates.price);
+    }
+
+    if (updates.stock !== undefined) {
+      updates.stock = Number(updates.stock);
+    }
+
+    if (updates.rating !== undefined) {
+      updates.rating = Number(updates.rating);
+    }
+
+    if (updates.discount !== undefined) {
+      updates.discount = Number(updates.discount);
+    }
+
+    updates.updatedAt = new Date();
 
     const result = await productsCollection.updateOne(
-      { _id: new ObjectId(id) },
       {
-        $set: {
-          ...safeUpdates,
-          updatedAt: new Date(),
-        },
+        _id: new ObjectId(id),
+      },
+      {
+        $set: updates,
       },
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "Product updated successfully",
       modifiedCount: result.modifiedCount,
+      message: "Product Updated Successfully",
     });
   } catch (error) {
-    console.error("PATCH /products/:id error:", error);
-    res.status(500).json({
+    console.error("UPDATE PRODUCT ERROR:", error);
+
+    return res.status(500).json({
       success: false,
-      message: "Failed to update product",
+      message: "Update Failed",
     });
   }
 });
-
 app.delete("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -455,30 +569,35 @@ app.delete("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid ID",
+        message: "Invalid Product ID",
       });
     }
 
-    const result = await productsCollection.deleteOne({
+    const existing = await productsCollection.findOne({
       _id: new ObjectId(id),
     });
 
-    if (result.deletedCount === 0) {
+    if (!existing) {
       return res.status(404).json({
         success: false,
-        message: "Product not found",
+        message: "Product Not Found",
       });
     }
 
-    res.status(200).json({
+    await productsCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    return res.status(200).json({
       success: true,
-      message: "Product deleted successfully",
+      message: "Product Deleted Successfully",
     });
   } catch (error) {
-    console.error("DELETE /products/:id error:", error);
-    res.status(500).json({
+    console.error("DELETE PRODUCT ERROR:", error);
+
+    return res.status(500).json({
       success: false,
-      message: "Failed to delete product",
+      message: "Delete Failed",
     });
   }
 });
@@ -506,6 +625,7 @@ app.post("/users", async (req, res) => {
         photo: user.photo || "",
         provider: user.provider || "password",
         lastLogin: new Date(),
+        updatedAt: new Date(),
       },
       $setOnInsert: {
         role: "user",
@@ -513,72 +633,73 @@ app.post("/users", async (req, res) => {
       },
     };
 
-    const options = {
+    const result = await usersCollection.updateOne(filter, updateDoc, {
       upsert: true,
-    };
+    });
 
-    const result = await usersCollection.updateOne(filter, updateDoc, options);
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: "User saved successfully",
       data: result,
     });
   } catch (error) {
-    console.error("POST /users error:", error);
+    console.error("POST /users ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Server error",
     });
   }
 });
-// ====================== GET USERS ======================
 app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    const { page = 1, limit = 10, search = "" } = req.query;
+    let { page = 1, limit = 10, search = "" } = req.query;
 
-    const pageNumber = Math.max(1, Number(page));
-    const limitNumber = Math.min(50, Number(limit));
+    page = Math.max(1, Number(page) || 1);
+    limit = Math.min(50, Math.max(1, Number(limit) || 10));
 
-    const query = search
-      ? {
-          email: {
-            $regex: search,
-            $options: "i",
-          },
-        }
-      : {};
+    const skip = (page - 1) * limit;
+
+    const query = {};
+
+    if (search?.trim()) {
+      query.email = {
+        $regex: search.trim(),
+        $options: "i",
+      };
+    }
 
     const users = await usersCollection
       .find(query)
+      .project({
+        password: 0,
+      })
       .sort({
         createdAt: -1,
       })
-      .skip((pageNumber - 1) * limitNumber)
-      .limit(limitNumber)
+      .skip(skip)
+      .limit(limit)
       .toArray();
 
     const total = await usersCollection.countDocuments(query);
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      page: pageNumber,
-      limit: limitNumber,
+      page,
+      limit,
       total,
-      totalPages: Math.ceil(total / limitNumber),
+      totalPages: Math.ceil(total / limit),
       data: users,
     });
   } catch (error) {
-    console.error(error);
+    console.error("GET USERS ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to fetch users",
     });
   }
 });
-// ====================== CHANGE USER ROLE ======================
 app.patch("/users/role/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -601,7 +722,6 @@ app.patch("/users/role/:id", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // Prevent changing own role
     if (user.email === req.user.email) {
       return res.status(400).json({
         success: false,
@@ -623,21 +743,20 @@ app.patch("/users/role/:id", verifyToken, verifyAdmin, async (req, res) => {
       },
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: `Role changed to ${newRole}`,
-      data: result,
+      modifiedCount: result.modifiedCount,
     });
   } catch (error) {
-    console.error(error);
+    console.error("ROLE UPDATE ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Role update failed",
     });
   }
 });
-// ====================== DELETE USER ======================
 app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -645,7 +764,7 @@ app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid ID",
+        message: "Invalid user ID",
       });
     }
 
@@ -660,7 +779,6 @@ app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // Prevent deleting yourself
     if (user.email === req.user.email) {
       return res.status(400).json({
         success: false,
@@ -672,15 +790,15 @@ app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       _id: new ObjectId(id),
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: "User deleted successfully",
       deletedCount: result.deletedCount,
     });
   } catch (error) {
-    console.error(error);
+    console.error("DELETE USER ERROR:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Delete failed",
     });
@@ -701,7 +819,7 @@ app.post("/carts", verifyToken, async (req, res) => {
 
     const { productId, quantity = 1 } = req.body;
 
-    if (!ObjectId.isValid(productId)) {
+    if (!productId || !ObjectId.isValid(productId)) {
       return res.status(400).json({
         success: false,
         message: "Invalid product id",
@@ -711,7 +829,9 @@ app.post("/carts", verifyToken, async (req, res) => {
     const qty = Math.max(1, Math.min(99, Number(quantity) || 1));
 
     const product = await productsCollection.findOne(
-      { _id: new ObjectId(productId) },
+      {
+        _id: new ObjectId(productId),
+      },
       {
         projection: {
           name: 1,
@@ -740,33 +860,33 @@ app.post("/carts", verifyToken, async (req, res) => {
     });
 
     if (existing) {
-      const quantity = existing.quantity + qty;
+      const newQuantity = Number(existing.quantity) + qty;
 
       await cartsCollection.updateOne(
         { _id: existing._id },
         {
           $set: {
-            quantity,
-            subtotal: Number((quantity * finalPrice).toFixed(2)),
+            quantity: newQuantity,
+            subtotal: Number((newQuantity * finalPrice).toFixed(2)),
             updatedAt: new Date(),
           },
         },
       );
 
-      return res.json({
+      return res.status(200).json({
         success: true,
         message: "Cart updated",
       });
     }
 
-    const cart = {
+    const cartItem = {
       email,
       productId: new ObjectId(productId),
 
       quantity: qty,
 
-      name: product.name || "Unknown Product",
-      image: product.image || "https://via.placeholder.com/300",
+      name: product.name,
+      image: product.image,
 
       price,
       discount,
@@ -778,7 +898,7 @@ app.post("/carts", verifyToken, async (req, res) => {
       updatedAt: new Date(),
     };
 
-    const result = await cartsCollection.insertOne(cart);
+    const result = await cartsCollection.insertOne(cartItem);
 
     return res.status(201).json({
       success: true,
@@ -786,7 +906,7 @@ app.post("/carts", verifyToken, async (req, res) => {
       message: "Added to cart",
     });
   } catch (error) {
-    console.error(error);
+    console.error("POST CART ERROR:", error);
 
     return res.status(500).json({
       success: false,
@@ -806,15 +926,13 @@ app.get("/carts", verifyToken, async (req, res) => {
     }
 
     const carts = await cartsCollection
-      .find(
-        { email },
-        {
-          projection: {
-            email: 0,
-          },
-        },
-      )
-      .sort({ createdAt: -1 })
+      .find({ email })
+      .project({
+        email: 0,
+      })
+      .sort({
+        createdAt: -1,
+      })
       .toArray();
 
     const summary = carts.reduce(
@@ -834,13 +952,13 @@ app.get("/carts", verifyToken, async (req, res) => {
 
     summary.totalPrice = Number(summary.totalPrice.toFixed(2));
 
-    return res.json({
+    return res.status(200).json({
       success: true,
       data: carts,
       summary,
     });
   } catch (error) {
-    console.error(error);
+    console.error("GET CART ERROR:", error);
 
     return res.status(500).json({
       success: false,
@@ -848,6 +966,7 @@ app.get("/carts", verifyToken, async (req, res) => {
     });
   }
 });
+
 app.patch("/carts/:id", verifyToken, async (req, res) => {
   try {
     const email = req.user?.email;
@@ -869,7 +988,7 @@ app.patch("/carts/:id", verifyToken, async (req, res) => {
       });
     }
 
-    if (quantity < 1 || quantity > 99) {
+    if (isNaN(quantity) || quantity < 1 || quantity > 99) {
       return res.status(400).json({
         success: false,
         message: "Invalid quantity",
@@ -911,12 +1030,12 @@ app.patch("/carts/:id", verifyToken, async (req, res) => {
       },
     );
 
-    return res.json({
+    return res.status(200).json({
       success: true,
       message: "Cart updated",
     });
   } catch (error) {
-    console.error(error);
+    console.error("PATCH CART ERROR:", error);
 
     return res.status(500).json({
       success: false,
@@ -955,12 +1074,12 @@ app.delete("/carts/:id", verifyToken, async (req, res) => {
       });
     }
 
-    return res.json({
+    return res.status(200).json({
       success: true,
       message: "Item removed successfully",
     });
   } catch (error) {
-    console.error(error);
+    console.error("DELETE CART ERROR:", error);
 
     return res.status(500).json({
       success: false,
@@ -970,12 +1089,15 @@ app.delete("/carts/:id", verifyToken, async (req, res) => {
 });
 
 //Orders apis
+// ======================================================
+// GET ALL ORDERS (ADMIN)
+// ======================================================
 app.get("/orders", verifyToken, verifyAdmin, async (req, res) => {
   try {
     let { status = "all", page = 1, limit = 10, search = "" } = req.query;
 
-    const pageNum = Math.max(1, Number(page));
-    const limitNum = Math.min(50, Number(limit));
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit) || 10));
     const skip = (pageNum - 1) * limitNum;
 
     const query = {};
@@ -984,10 +1106,20 @@ app.get("/orders", verifyToken, verifyAdmin, async (req, res) => {
       query.status = status;
     }
 
-    if (search) {
+    if (search?.trim()) {
       query.$or = [
-        { email: { $regex: search, $options: "i" } },
-        { "customer.phone": { $regex: search, $options: "i" } },
+        {
+          email: {
+            $regex: search.trim(),
+            $options: "i",
+          },
+        },
+        {
+          "customer.phone": {
+            $regex: search.trim(),
+            $options: "i",
+          },
+        },
       ];
     }
 
@@ -1018,10 +1150,13 @@ app.get("/orders", verifyToken, verifyAdmin, async (req, res) => {
     });
   }
 });
+
+// ======================================================
+// MY ORDERS
+// ======================================================
 app.get("/orders/my", verifyToken, async (req, res) => {
   try {
     const email = req.user.email;
-
     const { status = "all" } = req.query;
 
     const query = { email };
@@ -1049,6 +1184,10 @@ app.get("/orders/my", verifyToken, async (req, res) => {
     });
   }
 });
+
+// ======================================================
+// PLACE ORDER
+// ======================================================
 app.post("/orders", verifyToken, async (req, res) => {
   const session = client.startSession();
 
@@ -1059,7 +1198,7 @@ app.post("/orders", verifyToken, async (req, res) => {
     if (!customer?.name || !customer?.phone || !customer?.address) {
       return res.status(400).json({
         success: false,
-        message: "Customer info required",
+        message: "Customer information required",
       });
     }
 
@@ -1074,25 +1213,23 @@ app.post("/orders", verifyToken, async (req, res) => {
 
     const itemsWithProducts = await Promise.all(
       cartItems.map(async (item) => {
-        if (!ObjectId.isValid(item.productId)) return null;
-
         const product = await productsCollection.findOne({
           _id: new ObjectId(item.productId),
         });
 
         if (!product) return null;
 
-        const price =
+        const discountedPrice =
           product.price - (product.price * (product.discount || 0)) / 100;
 
         return {
           productId: product._id,
           name: product.name,
-          price: product.price,
-          discount: product.discount || 0,
           image: product.image,
           quantity: item.quantity,
-          subtotal: Number((price * item.quantity).toFixed(2)),
+          price: product.price,
+          discount: product.discount || 0,
+          subtotal: Number((discountedPrice * item.quantity).toFixed(2)),
         };
       }),
     );
@@ -1102,21 +1239,25 @@ app.post("/orders", verifyToken, async (req, res) => {
     if (!safeItems.length) {
       return res.status(400).json({
         success: false,
-        message: "No valid products in cart",
+        message: "No valid products found",
       });
     }
 
-    const total = safeItems.reduce((acc, item) => acc + item.subtotal, 0);
+    const total = safeItems.reduce((sum, item) => sum + item.subtotal, 0);
 
     await session.withTransaction(async () => {
       await ordersCollection.insertOne(
         {
           email,
           customer,
+
           items: safeItems,
+
           total: Number(total.toFixed(2)),
+
           status: "pending",
           paymentStatus: "unpaid",
+
           createdAt: new Date(),
           updatedAt: new Date(),
         },
@@ -1141,10 +1282,14 @@ app.post("/orders", verifyToken, async (req, res) => {
     await session.endSession();
   }
 });
+
+// ======================================================
+// CANCEL ORDER
+// ======================================================
 app.patch("/orders/cancel/:id", verifyToken, async (req, res) => {
   try {
-    const email = req.user.email;
     const { id } = req.params;
+    const email = req.user.email;
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
@@ -1173,7 +1318,10 @@ app.patch("/orders/cancel/:id", verifyToken, async (req, res) => {
     }
 
     await ordersCollection.updateOne(
-      { _id: new ObjectId(id), email },
+      {
+        _id: new ObjectId(id),
+        email,
+      },
       {
         $set: {
           status: "cancelled",
@@ -1184,7 +1332,7 @@ app.patch("/orders/cancel/:id", verifyToken, async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "Order cancelled",
+      message: "Order cancelled successfully",
     });
   } catch (error) {
     console.error("CANCEL ERROR:", error);
@@ -1196,6 +1344,9 @@ app.patch("/orders/cancel/:id", verifyToken, async (req, res) => {
   }
 });
 
+// ======================================================
+// SINGLE INVOICE JSON
+// ======================================================
 app.get("/orders/invoice/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1240,12 +1391,23 @@ app.get("/orders/invoice/:id", verifyToken, async (req, res) => {
     });
   }
 });
+
+// ======================================================
+// UPDATE ORDER STATUS (ADMIN)
+// ======================================================
 app.patch("/orders/status/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
 
-    const allowed = [
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid order ID",
+      });
+    }
+
+    const allowedStatuses = [
       "pending",
       "paid",
       "processing",
@@ -1254,15 +1416,17 @@ app.patch("/orders/status/:id", verifyToken, verifyAdmin, async (req, res) => {
       "cancelled",
     ];
 
-    if (!allowed.includes(status)) {
+    if (!allowedStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
         message: "Invalid status",
       });
     }
 
-    await ordersCollection.updateOne(
-      { _id: new ObjectId(id) },
+    const result = await ordersCollection.updateOne(
+      {
+        _id: new ObjectId(id),
+      },
       {
         $set: {
           status,
@@ -1271,12 +1435,19 @@ app.patch("/orders/status/:id", verifyToken, verifyAdmin, async (req, res) => {
       },
     );
 
+    if (!result.matchedCount) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
     res.status(200).json({
       success: true,
       message: "Order status updated",
     });
   } catch (error) {
-    console.error(error);
+    console.error("STATUS UPDATE ERROR:", error);
 
     res.status(500).json({
       success: false,
@@ -1284,120 +1455,79 @@ app.patch("/orders/status/:id", verifyToken, verifyAdmin, async (req, res) => {
     });
   }
 });
-
-// ====================== INVOICE PDF ======================
-app.get("/orders/invoice/:id/pdf", verifyToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const email = req.user.email;
-
-    const order = await ordersCollection.findOne({
-      _id: new ObjectId(id),
-      email,
-    });
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: "Order not found",
-      });
-    }
-
-    const doc = new PDFDocument({ margin: 40 });
-
-    res.setHeader("Content-Type", "application/pdf");
-
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename=invoice-${id}.pdf`,
-    );
-
-    doc.pipe(res);
-
-    // HEADER
-    doc.fontSize(20).text("🍪 Biscuit Shop Invoice", {
-      align: "center",
-    });
-
-    doc.moveDown();
-
-    // CUSTOMER INFO
-    doc.fontSize(12).text(`Invoice ID: ${id}`);
-    doc.text(`Customer: ${order.customer.name}`);
-    doc.text(`Phone: ${order.customer.phone}`);
-    doc.text(`Address: ${order.customer.address}`);
-    doc.text(`Email: ${order.email}`);
-
-    doc.moveDown();
-
-    // ITEMS
-    doc.fontSize(14).text("Items:");
-
-    order.items.forEach((item, index) => {
-      doc
-        .fontSize(12)
-        .text(
-          `${index + 1}. ${item.name} - Qty: ${
-            item.quantity
-          } - Price: ${item.price} - Subtotal: ${item.subtotal}`,
-        );
-    });
-
-    doc.moveDown();
-
-    // TOTAL
-    doc.fontSize(16).text(`TOTAL: ৳ ${order.total}`, {
-      align: "right",
-    });
-
-    doc.moveDown();
-
-    doc.fontSize(10).text("Thank you for your purchase!", {
-      align: "center",
-    });
-
-    doc.end();
-  } catch (error) {
-    console.error("PDF ERROR:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "PDF generation failed",
-    });
-  }
-});
 // ====================== MONTHLY SALES ======================
+// ======================================================
+// MONTHLY SALES ANALYTICS
+// ======================================================
 app.get(
   "/admin/analytics/monthly-sales",
   verifyToken,
   verifyAdmin,
   async (req, res) => {
     try {
-      const orders = await ordersCollection.find().toArray();
+      const result = await ordersCollection
+        .aggregate([
+          {
+            $match: {
+              status: {
+                $ne: "cancelled",
+              },
+            },
+          },
+          {
+            $group: {
+              _id: {
+                year: {
+                  $year: "$createdAt",
+                },
+                month: {
+                  $month: "$createdAt",
+                },
+              },
+              sales: {
+                $sum: "$total",
+              },
+            },
+          },
+          {
+            $sort: {
+              "_id.year": 1,
+              "_id.month": 1,
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              month: {
+                $concat: [
+                  { $toString: "$_id.year" },
+                  "-",
+                  {
+                    $cond: [
+                      { $lt: ["$_id.month", 10] },
+                      {
+                        $concat: ["0", { $toString: "$_id.month" }],
+                      },
+                      { $toString: "$_id.month" },
+                    ],
+                  },
+                ],
+              },
+              sales: {
+                $round: ["$sales", 2],
+              },
+            },
+          },
+        ])
+        .toArray();
 
-      const monthly = {};
-
-      orders.forEach((order) => {
-        const date = new Date(order.createdAt);
-        const month = `${date.getFullYear()}-${date.getMonth() + 1}`;
-
-        if (!monthly[month]) {
-          monthly[month] = 0;
-        }
-
-        monthly[month] += order.total;
-      });
-
-      const result = Object.keys(monthly).map((key) => ({
-        month: key,
-        sales: monthly[key],
-      }));
-
-      res.json({
+      res.status(200).json({
         success: true,
         data: result,
       });
     } catch (error) {
+      console.error("MONTHLY SALES ERROR:", error);
+
       res.status(500).json({
         success: false,
         message: "Monthly analytics failed",
@@ -1405,45 +1535,167 @@ app.get(
     }
   },
 );
+
+// ======================================================
+// TOP SELLING PRODUCTS
+// ======================================================
 app.get(
   "/admin/analytics/top-products",
   verifyToken,
   verifyAdmin,
   async (req, res) => {
     try {
-      const orders = await ordersCollection.find().toArray();
+      const result = await ordersCollection
+        .aggregate([
+          {
+            $match: {
+              status: {
+                $ne: "cancelled",
+              },
+            },
+          },
+          {
+            $unwind: "$items",
+          },
+          {
+            $group: {
+              _id: "$items.name",
+              sold: {
+                $sum: "$items.quantity",
+              },
+              revenue: {
+                $sum: "$items.subtotal",
+              },
+            },
+          },
+          {
+            $sort: {
+              sold: -1,
+            },
+          },
+          {
+            $limit: 5,
+          },
+          {
+            $project: {
+              _id: 0,
+              name: "$_id",
+              sold: 1,
+              revenue: {
+                $round: ["$revenue", 2],
+              },
+            },
+          },
+        ])
+        .toArray();
 
-      const productMap = {};
-
-      orders.forEach((order) => {
-        order.items.forEach((item) => {
-          if (!productMap[item.name]) {
-            productMap[item.name] = 0;
-          }
-          productMap[item.name] += item.quantity;
-        });
-      });
-
-      const result = Object.entries(productMap)
-        .map(([name, sold]) => ({ name, sold }))
-        .sort((a, b) => b.sold - a.sold)
-        .slice(0, 5);
-
-      res.json({
+      res.status(200).json({
         success: true,
         data: result,
       });
     } catch (error) {
+      console.error("TOP PRODUCTS ERROR:", error);
+
       res.status(500).json({
         success: false,
-        message: "Top products failed",
+        message: "Top products analytics failed",
       });
     }
   },
 );
 
-app.get("/", (req, res) => {
-  res.send("Biscuit Shop Server Running");
+// ======================================================
+// ADMIN DASHBOARD STATS
+// ======================================================
+app.get(
+  "/admin/dashboard-stats",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const [totalUsers, totalProducts, totalOrders, revenueResult] =
+        await Promise.all([
+          usersCollection.countDocuments(),
+          productsCollection.countDocuments(),
+          ordersCollection.countDocuments(),
+          ordersCollection
+            .aggregate([
+              {
+                $match: {
+                  status: {
+                    $ne: "cancelled",
+                  },
+                },
+              },
+              {
+                $group: {
+                  _id: null,
+                  totalRevenue: {
+                    $sum: "$total",
+                  },
+                },
+              },
+            ])
+            .toArray(),
+        ]);
+
+      const totalRevenue = revenueResult[0]?.totalRevenue || 0;
+
+      res.status(200).json({
+        success: true,
+        stats: {
+          totalUsers,
+          totalProducts,
+          totalOrders,
+          totalRevenue: Number(totalRevenue.toFixed(2)),
+        },
+      });
+    } catch (error) {
+      console.error("DASHBOARD STATS ERROR:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to load dashboard stats",
+      });
+    }
+  },
+);
+
+// ======================================================
+// RECENT ORDERS
+// ======================================================
+app.get("/admin/recent-orders", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const orders = await ordersCollection
+      .find({})
+      .sort({
+        createdAt: -1,
+      })
+      .limit(10)
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      data: orders,
+    });
+  } catch (error) {
+    console.error("RECENT ORDERS ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch recent orders",
+    });
+  }
 });
 
+// ======================================================
+// ROOT ROUTE
+// ======================================================
+app.get("/", (req, res) => {
+  res.status(200).send("🍪 Biscuit Shop Server Running...");
+});
+
+// ======================================================
+// EXPORT APP
+// ======================================================
 export default app;
