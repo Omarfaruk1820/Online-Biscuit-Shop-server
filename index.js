@@ -177,16 +177,18 @@ export {
   jwt,
   PDFDocument,
 };
-// ================= JWT =================
 
-/* ==========================================
-   JWT HELPERS
-========================================== */
+// import jwt from "jsonwebtoken";
 
-export const createToken = (payload) => {
+if (!process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET is missing in environment variables.");
+}
+
+export const createToken = ({ email }) => {
   return jwt.sign(
     {
-      email: payload.email,
+      email: email.trim().toLowerCase(),
+      type: "access",
     },
     process.env.JWT_SECRET,
     {
@@ -195,19 +197,14 @@ export const createToken = (payload) => {
   );
 };
 
-/* ==========================================
-   VERIFY TOKEN
-========================================== */
-
 export const verifyToken = (req, res, next) => {
   try {
     let token = req.cookies?.token;
 
-    // fallback for mobile apps / postman
     if (!token) {
       const authHeader = req.headers.authorization;
 
-      if (authHeader && authHeader.startsWith("Bearer ")) {
+      if (authHeader?.startsWith("Bearer ")) {
         token = authHeader.split(" ")[1];
       }
     }
@@ -215,7 +212,7 @@ export const verifyToken = (req, res, next) => {
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized Access",
+        message: "Unauthorized access.",
       });
     }
 
@@ -225,18 +222,19 @@ export const verifyToken = (req, res, next) => {
 
     next();
   } catch (error) {
-    console.error("VERIFY TOKEN ERROR:", error);
+    if (error.name === "TokenExpiredError") {
+      return res.status(401).json({
+        success: false,
+        message: "Token expired.",
+      });
+    }
 
     return res.status(403).json({
       success: false,
-      message: "Invalid Token",
+      message: "Invalid token.",
     });
   }
 };
-
-/* ==========================================
-   VERIFY ADMIN
-========================================== */
 
 export const verifyAdmin = async (req, res, next) => {
   try {
@@ -247,101 +245,88 @@ export const verifyAdmin = async (req, res, next) => {
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: "User not found",
+        message: "User not found.",
       });
     }
 
-    if (user.role !== "admin") {
+    if (user.status === "blocked") {
       return res.status(403).json({
         success: false,
-        message: "Admin Only Route",
+        message: "Account blocked.",
+      });
+    }
+
+    if (!["admin"].includes(user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: "Admin only route.",
       });
     }
 
     next();
   } catch (error) {
-    console.error("VERIFY ADMIN ERROR:", error);
+    console.error(error);
 
     return res.status(500).json({
       success: false,
-      message: "Admin Verification Failed",
+      message: "Admin verification failed.",
     });
   }
 };
 
-/* ==========================================
-   LOGIN / JWT
-========================================== */
-
 app.post("/jwt", async (req, res) => {
   try {
-    const { email } = req.body;
+    const email = req.body.email?.trim().toLowerCase();
 
     if (!email) {
       return res.status(400).json({
         success: false,
-        message: "Email Required",
+        message: "Email is required.",
       });
     }
 
-    const existingUser = await usersCollection.findOne({
-      email,
-    });
+    const existingUser = await usersCollection.findOne({ email });
 
-    const token = createToken({
-      email,
-    });
+    if (!existingUser) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found.",
+      });
+    }
 
-    res.cookie("token", token, {
-      httpOnly: true,
+    const token = createToken({ email });
 
-      secure: process.env.NODE_ENV === "production",
-
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie("token", token, cookieOptions);
 
     return res.status(200).json({
       success: true,
-      token,
-      role: existingUser?.role || "user",
-      message: "Login Successful",
+      role: existingUser.role,
+      message: "Login successful.",
     });
   } catch (error) {
-    console.error("JWT ROUTE ERROR:", error);
+    console.error(error);
 
     return res.status(500).json({
       success: false,
-      message: "Failed To Generate JWT",
+      message: "Failed to generate token.",
     });
   }
 });
 
-/* ==========================================
-   LOGOUT
-========================================== */
-
 app.post("/logout", (req, res) => {
   try {
-    res.clearCookie("token", {
-      httpOnly: true,
-
-      secure: process.env.NODE_ENV === "production",
-
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-    });
+    res.clearCookie("token", cookieOptions);
 
     return res.status(200).json({
       success: true,
-      message: "Logged Out Successfully",
+      message: "Logged out successfully.",
     });
   } catch (error) {
-    console.error("LOGOUT ERROR:", error);
+    console.error(error);
 
     return res.status(500).json({
       success: false,
-      message: "Logout Failed",
+      message: "Logout failed.",
     });
   }
 });
@@ -477,7 +462,11 @@ app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
       name: name.trim(),
       price: Number(price),
       stock: Number(stock),
-      image: image.trim(),
+      // image: image.trim(),
+      image:
+        typeof product.image === "string"
+          ? product.image.replace(/[\[\]\(\)]/g, "").trim()
+          : "",
       rating: Number(rating),
       category: category.toLowerCase(),
       reviews: Number(reviews),
@@ -648,6 +637,39 @@ app.post("/users", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Server error",
+    });
+  }
+});
+app.get("/users/:email", async (req, res) => {
+  try {
+    const { email } = req.params;
+
+    const user = await usersCollection.findOne(
+      { email },
+      {
+        projection: {
+          password: 0,
+        },
+      },
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: user,
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      success: false,
+      message: "Server Error",
     });
   }
 });
@@ -886,7 +908,11 @@ app.post("/carts", verifyToken, async (req, res) => {
       quantity: qty,
 
       name: product.name,
-      image: product.image,
+      // image: product.image,
+      image:
+        typeof product.image === "string"
+          ? product.image.replace(/[\[\]\(\)]/g, "").trim()
+          : "",
 
       price,
       discount,
