@@ -27,26 +27,19 @@ app.use(cookieParser());
 
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://your-domain.vercel.app"],
+    origin: [
+      process.env.CLIENT_URL,
+      process.env.CLIENT_URL_PROD,
+    ],
     credentials: true,
-  }),
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
 );
 
-app.use(express.json());
 
-// app.use(
-//   cors({
-//     origin: [
-//       "http://localhost:5173",
-//       "https://biscuit-shop-kumarkhali.web.app",
-//     ],
-//     credentials: true,
-//   }),
-// );
 
-/* ======================================
-   ENV CHECK
-====================================== */
+
 
 const requiredEnv = ["DB_USERNAME", "DB_PASS", "JWT_SECRET"];
 
