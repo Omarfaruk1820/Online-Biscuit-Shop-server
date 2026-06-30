@@ -1,18 +1,25 @@
+import dotenv from "dotenv";
+dotenv.config();
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
+
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
 import PDFDocument from "pdfkit";
-import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+// import usersRoutes from "./routes/users.routes.js";
+import usersRoutes from "./routes/users.routes.js";
+import authRoutes from "./routes/auth.routes.js";
 
-dotenv.config();
+import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 
 const app = express();
 
 /* ======================================
    MIDDLEWARE
 ====================================== */
+import verifyToken from "./middleware/verifyToken.js";
+import verifyUser from "./middleware/verifyUser.js";
+import verifyAdmin from "./middleware/verifyAdmin.js";
 
 app.use(express.json());
 
@@ -20,13 +27,22 @@ app.use(cookieParser());
 
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://biscuit-shop-kumarkhali.web.app",
-    ],
+    origin: ["http://localhost:5173", "https://your-domain.vercel.app"],
     credentials: true,
   }),
 );
+
+app.use(express.json());
+
+// app.use(
+//   cors({
+//     origin: [
+//       "http://localhost:5173",
+//       "https://biscuit-shop-kumarkhali.web.app",
+//     ],
+//     credentials: true,
+//   }),
+// );
 
 /* ======================================
    ENV CHECK
@@ -178,159 +194,400 @@ export {
   PDFDocument,
 };
 
-// import jwt from "jsonwebtoken";
+// if (!process.env.JWT_SECRET) {
+//   throw new Error("JWT_SECRET is missing in environment variables.");
+// }
 
-if (!process.env.JWT_SECRET) {
-  throw new Error("JWT_SECRET is missing in environment variables.");
-}
+// export const createToken = ({ email }) => {
+//   return jwt.sign(
+//     {
+//       email: email.trim().toLowerCase(),
+//       type: "access",
+//     },
+//     process.env.JWT_SECRET,
+//     {
+//       expiresIn: "7d",
+//     },
+//   );
+// };
 
-export const createToken = ({ email }) => {
-  return jwt.sign(
-    {
-      email: email.trim().toLowerCase(),
-      type: "access",
-    },
-    process.env.JWT_SECRET,
-    {
-      expiresIn: "7d",
-    },
-  );
-};
+// export const verifyToken = (req, res, next) => {
+//   try {
+//     let token = req.cookies?.token;
 
-export const verifyToken = (req, res, next) => {
-  try {
-    let token = req.cookies?.token;
+//     if (!token) {
+//       const authHeader = req.headers.authorization;
 
-    if (!token) {
-      const authHeader = req.headers.authorization;
+//       if (authHeader?.startsWith("Bearer ")) {
+//         token = authHeader.split(" ")[1];
+//       }
+//     }
 
-      if (authHeader?.startsWith("Bearer ")) {
-        token = authHeader.split(" ")[1];
-      }
-    }
+//     if (!token) {
+//       return res.status(401).json({
+//         success: false,
+//         message: "Unauthorized access.",
+//       });
+//     }
 
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized access.",
-      });
-    }
+//     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+//     req.user = decoded;
 
-    req.user = decoded;
+//     next();
+//   } catch (error) {
+//     if (error.name === "TokenExpiredError") {
+//       return res.status(401).json({
+//         success: false,
+//         message: "Token expired.",
+//       });
+//     }
 
-    next();
-  } catch (error) {
-    if (error.name === "TokenExpiredError") {
-      return res.status(401).json({
-        success: false,
-        message: "Token expired.",
-      });
-    }
+//     return res.status(403).json({
+//       success: false,
+//       message: "Invalid token.",
+//     });
+//   }
+// };
 
-    return res.status(403).json({
-      success: false,
-      message: "Invalid token.",
-    });
-  }
-};
+// export const verifyAdmin = async (req, res, next) => {
+//   try {
+//     const user = await usersCollection.findOne({
+//       email: req.user.email,
+//     });
 
-export const verifyAdmin = async (req, res, next) => {
-  try {
-    const user = await usersCollection.findOne({
-      email: req.user.email,
-    });
+//     if (!user) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "User not found.",
+//       });
+//     }
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found.",
-      });
-    }
+//     if (user.status === "blocked") {
+//       return res.status(403).json({
+//         success: false,
+//         message: "Account blocked.",
+//       });
+//     }
 
-    if (user.status === "blocked") {
-      return res.status(403).json({
-        success: false,
-        message: "Account blocked.",
-      });
-    }
+//     if (!["admin"].includes(user.role)) {
+//       return res.status(403).json({
+//         success: false,
+//         message: "Admin only route.",
+//       });
+//     }
 
-    if (!["admin"].includes(user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: "Admin only route.",
-      });
-    }
+//     next();
+//   } catch (error) {
+//     console.error(error);
 
-    next();
-  } catch (error) {
-    console.error(error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Admin verification failed.",
+//     });
+//   }
+// };
 
-    return res.status(500).json({
-      success: false,
-      message: "Admin verification failed.",
-    });
-  }
-};
+// app.post("/jwt", async (req, res) => {
+//   try {
+//     const { email } = req.body;
 
-app.post("/jwt", async (req, res) => {
-  try {
-    const email = req.body.email?.trim().toLowerCase();
+//     // Validate email
+//     if (!email || typeof email !== "string") {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Valid email is required.",
+//       });
+//     }
 
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        message: "Email is required.",
-      });
-    }
+//     const normalizedEmail = email.trim().toLowerCase();
 
-    const existingUser = await usersCollection.findOne({ email });
+//     // Find user
+//     const user = await usersCollection.findOne({
+//       email: normalizedEmail,
+//     });
 
-    if (!existingUser) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found.",
-      });
-    }
+//     if (!user) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "User not found.",
+//       });
+//     }
 
-    const token = createToken({ email });
+//     // Blocked user check
+//     if (user.status === "blocked") {
+//       return res.status(403).json({
+//         success: false,
+//         message: "Your account has been blocked.",
+//       });
+//     }
 
-    res.cookie("token", token, cookieOptions);
+//     // Create JWT
+//     const token = createToken({
+//       email: normalizedEmail,
+//     });
 
-    return res.status(200).json({
-      success: true,
-      role: existingUser.role,
-      message: "Login successful.",
-    });
-  } catch (error) {
-    console.error(error);
+//     // Set Cookie
+//     res.cookie("token", token, cookieOptions);
 
-    return res.status(500).json({
-      success: false,
-      message: "Failed to generate token.",
-    });
-  }
-});
+//     return res.status(200).json({
+//       success: true,
+//       message: "Login successful.",
+//       role: user.role,
+//       user: {
+//         name: user.name,
+//         email: user.email,
+//         role: user.role,
+//         photo: user.photo,
+//       },
+//     });
+//   } catch (error) {
+//     console.error("JWT ROUTE ERROR:", error);
 
-app.post("/logout", (req, res) => {
-  try {
-    res.clearCookie("token", cookieOptions);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Internal server error.",
+//     });
+//   }
+// });
+app.use("/auth", authRoutes(usersCollection));
+app.use("/users", usersRoutes(usersCollection));
 
-    return res.status(200).json({
-      success: true,
-      message: "Logged out successfully.",
-    });
-  } catch (error) {
-    console.error(error);
+// ====================== CREATE USER ======================
+// app.post("/users", async (req, res) => {
+//   try {
+//     const user = req.body;
 
-    return res.status(500).json({
-      success: false,
-      message: "Logout failed.",
-    });
-  }
-});
+//     if (!user?.email) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Email is required",
+//       });
+//     }
 
+//     const filter = {
+//       email: user.email,
+//     };
+
+//     const updateDoc = {
+//       $set: {
+//         name: user.name || "",
+//         email: user.email,
+//         photo: user.photo || "",
+//         provider: user.provider || "password",
+//         lastLogin: new Date(),
+//         updatedAt: new Date(),
+//       },
+//       $setOnInsert: {
+//         role: "user",
+//         createdAt: new Date(),
+//       },
+//     };
+
+//     const result = await usersCollection.updateOne(filter, updateDoc, {
+//       upsert: true,
+//     });
+
+//     return res.status(200).json({
+//       success: true,
+//       message: "User saved successfully",
+//       data: result,
+//     });
+//   } catch (error) {
+//     console.error("POST /users ERROR:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: "Server error",
+//     });
+//   }
+// });
+// app.get("/users/:email", async (req, res) => {
+//   try {
+//     const { email } = req.params;
+
+//     const user = await usersCollection.findOne(
+//       { email },
+//       {
+//         projection: {
+//           password: 0,
+//         },
+//       },
+//     );
+
+//     if (!user) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "User not found",
+//       });
+//     }
+
+//     res.status(200).json({
+//       success: true,
+//       data: user,
+//     });
+//   } catch (error) {
+//     console.error(error);
+
+//     res.status(500).json({
+//       success: false,
+//       message: "Server Error",
+//     });
+//   }
+// });
+// app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
+//   try {
+//     let { page = 1, limit = 10, search = "" } = req.query;
+
+//     page = Math.max(1, Number(page) || 1);
+//     limit = Math.min(50, Math.max(1, Number(limit) || 10));
+
+//     const skip = (page - 1) * limit;
+
+//     const query = {};
+
+//     if (search?.trim()) {
+//       query.email = {
+//         $regex: search.trim(),
+//         $options: "i",
+//       };
+//     }
+
+//     const users = await usersCollection
+//       .find(query)
+//       .project({
+//         password: 0,
+//       })
+//       .sort({
+//         createdAt: -1,
+//       })
+//       .skip(skip)
+//       .limit(limit)
+//       .toArray();
+
+//     const total = await usersCollection.countDocuments(query);
+
+//     return res.status(200).json({
+//       success: true,
+//       page,
+//       limit,
+//       total,
+//       totalPages: Math.ceil(total / limit),
+//       data: users,
+//     });
+//   } catch (error) {
+//     console.error("GET USERS ERROR:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: "Failed to fetch users",
+//     });
+//   }
+// });
+// app.patch("/users/role/:id", verifyToken, verifyAdmin, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+
+//     if (!ObjectId.isValid(id)) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Invalid user ID",
+//       });
+//     }
+
+//     const user = await usersCollection.findOne({
+//       _id: new ObjectId(id),
+//     });
+
+//     if (!user) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "User not found",
+//       });
+//     }
+
+//     if (user.email === req.user.email) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "You cannot change your own role",
+//       });
+//     }
+
+//     const newRole = user.role === "admin" ? "user" : "admin";
+
+//     const result = await usersCollection.updateOne(
+//       {
+//         _id: new ObjectId(id),
+//       },
+//       {
+//         $set: {
+//           role: newRole,
+//           updatedAt: new Date(),
+//         },
+//       },
+//     );
+
+//     return res.status(200).json({
+//       success: true,
+//       message: `Role changed to ${newRole}`,
+//       modifiedCount: result.modifiedCount,
+//     });
+//   } catch (error) {
+//     console.error("ROLE UPDATE ERROR:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: "Role update failed",
+//     });
+//   }
+// });
+// app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+
+//     if (!ObjectId.isValid(id)) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Invalid user ID",
+//       });
+//     }
+
+//     const user = await usersCollection.findOne({
+//       _id: new ObjectId(id),
+//     });
+
+//     if (!user) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "User not found",
+//       });
+//     }
+
+//     if (user.email === req.user.email) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "You cannot delete yourself",
+//       });
+//     }
+
+//     const result = await usersCollection.deleteOne({
+//       _id: new ObjectId(id),
+//     });
+
+//     return res.status(200).json({
+//       success: true,
+//       message: "User deleted successfully",
+//       deletedCount: result.deletedCount,
+//     });
+//   } catch (error) {
+//     console.error("DELETE USER ERROR:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: "Delete failed",
+//     });
+//   }
+// });
 // ====================== PRODUCTS ======================
 app.get("/products", async (req, res) => {
   try {
@@ -426,77 +683,86 @@ app.get("/products/:id", async (req, res) => {
     });
   }
 });
-app.post("/products", verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const {
-      name,
-      price,
-      stock = 0,
-      image = "",
-      rating = 4.5,
-      category = "cookies",
-      reviews = 0,
-      brand = "",
-      weight = "",
-      description = "",
-      ingredients = "",
-      expiry = "",
-      discount = 0,
-    } = req.body;
+app.post(
+  "/products",
 
-    if (!name?.trim()) {
-      return res.status(400).json({
+  verifyToken,
+
+  verifyUser(usersCollection),
+
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const {
+        name,
+        price,
+        stock = 0,
+        image = "",
+        rating = 4.5,
+        category = "cookies",
+        reviews = 0,
+        brand = "",
+        weight = "",
+        description = "",
+        ingredients = "",
+        expiry = "",
+        discount = 0,
+      } = req.body;
+
+      if (!name?.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Product Name Required",
+        });
+      }
+
+      if (isNaN(price)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid Price",
+        });
+      }
+
+      const newProduct = {
+        name: name.trim(),
+        price: Number(price),
+        stock: Number(stock),
+        // image: image.trim(),
+        image:
+          typeof product.image === "string"
+            ? product.image.replace(/[\[\]\(\)]/g, "").trim()
+            : "",
+        rating: Number(rating),
+        category: category.toLowerCase(),
+        reviews: Number(reviews),
+        brand: brand.trim(),
+        weight,
+        description,
+        ingredients,
+        expiry,
+        discount: Number(discount),
+        createdBy: req.user.email,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const result = await productsCollection.insertOne(newProduct);
+
+      return res.status(201).json({
+        success: true,
+        insertedId: result.insertedId,
+        message: "Product Created Successfully",
+      });
+    } catch (error) {
+      console.error("CREATE PRODUCT ERROR:", error);
+
+      return res.status(500).json({
         success: false,
-        message: "Product Name Required",
+        message: "Failed To Create Product",
       });
     }
-
-    if (isNaN(price)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid Price",
-      });
-    }
-
-    const newProduct = {
-      name: name.trim(),
-      price: Number(price),
-      stock: Number(stock),
-      // image: image.trim(),
-      image:
-        typeof product.image === "string"
-          ? product.image.replace(/[\[\]\(\)]/g, "").trim()
-          : "",
-      rating: Number(rating),
-      category: category.toLowerCase(),
-      reviews: Number(reviews),
-      brand: brand.trim(),
-      weight,
-      description,
-      ingredients,
-      expiry,
-      discount: Number(discount),
-      createdBy: req.user.email,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    const result = await productsCollection.insertOne(newProduct);
-
-    return res.status(201).json({
-      success: true,
-      insertedId: result.insertedId,
-      message: "Product Created Successfully",
-    });
-  } catch (error) {
-    console.error("CREATE PRODUCT ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed To Create Product",
-    });
-  }
-});
+  },
+);
 app.patch("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -587,242 +853,6 @@ app.delete("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Delete Failed",
-    });
-  }
-});
-
-// ====================== CREATE USER ======================
-app.post("/users", async (req, res) => {
-  try {
-    const user = req.body;
-
-    if (!user?.email) {
-      return res.status(400).json({
-        success: false,
-        message: "Email is required",
-      });
-    }
-
-    const filter = {
-      email: user.email,
-    };
-
-    const updateDoc = {
-      $set: {
-        name: user.name || "",
-        email: user.email,
-        photo: user.photo || "",
-        provider: user.provider || "password",
-        lastLogin: new Date(),
-        updatedAt: new Date(),
-      },
-      $setOnInsert: {
-        role: "user",
-        createdAt: new Date(),
-      },
-    };
-
-    const result = await usersCollection.updateOne(filter, updateDoc, {
-      upsert: true,
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "User saved successfully",
-      data: result,
-    });
-  } catch (error) {
-    console.error("POST /users ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-});
-app.get("/users/:email", async (req, res) => {
-  try {
-    const { email } = req.params;
-
-    const user = await usersCollection.findOne(
-      { email },
-      {
-        projection: {
-          password: 0,
-        },
-      },
-    );
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: user,
-    });
-  } catch (error) {
-    console.error(error);
-
-    res.status(500).json({
-      success: false,
-      message: "Server Error",
-    });
-  }
-});
-app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    let { page = 1, limit = 10, search = "" } = req.query;
-
-    page = Math.max(1, Number(page) || 1);
-    limit = Math.min(50, Math.max(1, Number(limit) || 10));
-
-    const skip = (page - 1) * limit;
-
-    const query = {};
-
-    if (search?.trim()) {
-      query.email = {
-        $regex: search.trim(),
-        $options: "i",
-      };
-    }
-
-    const users = await usersCollection
-      .find(query)
-      .project({
-        password: 0,
-      })
-      .sort({
-        createdAt: -1,
-      })
-      .skip(skip)
-      .limit(limit)
-      .toArray();
-
-    const total = await usersCollection.countDocuments(query);
-
-    return res.status(200).json({
-      success: true,
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-      data: users,
-    });
-  } catch (error) {
-    console.error("GET USERS ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch users",
-    });
-  }
-});
-app.patch("/users/role/:id", verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid user ID",
-      });
-    }
-
-    const user = await usersCollection.findOne({
-      _id: new ObjectId(id),
-    });
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    if (user.email === req.user.email) {
-      return res.status(400).json({
-        success: false,
-        message: "You cannot change your own role",
-      });
-    }
-
-    const newRole = user.role === "admin" ? "user" : "admin";
-
-    const result = await usersCollection.updateOne(
-      {
-        _id: new ObjectId(id),
-      },
-      {
-        $set: {
-          role: newRole,
-          updatedAt: new Date(),
-        },
-      },
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: `Role changed to ${newRole}`,
-      modifiedCount: result.modifiedCount,
-    });
-  } catch (error) {
-    console.error("ROLE UPDATE ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Role update failed",
-    });
-  }
-});
-app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid user ID",
-      });
-    }
-
-    const user = await usersCollection.findOne({
-      _id: new ObjectId(id),
-    });
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    if (user.email === req.user.email) {
-      return res.status(400).json({
-        success: false,
-        message: "You cannot delete yourself",
-      });
-    }
-
-    const result = await usersCollection.deleteOne({
-      _id: new ObjectId(id),
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "User deleted successfully",
-      deletedCount: result.deletedCount,
-    });
-  } catch (error) {
-    console.error("DELETE USER ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Delete failed",
     });
   }
 });
