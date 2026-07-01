@@ -135,8 +135,8 @@ const usersRoutes = (usersCollection) => {
   router.get(
     "/",
     verifyToken,
-    verifyUser(usersCollection),
-    verifyAdmin,
+    // verifyUser(usersCollection),
+    // verifyAdmin,
     async (req, res) => {
       try {
         let { page = 1, limit = 10, search = "", sort = "newest" } = req.query;
