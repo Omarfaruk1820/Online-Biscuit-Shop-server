@@ -1,4 +1,4 @@
-import express from "express";
+import { Router } from "express";
 
 import createToken from "../middleware/createToken.js";
 import verifyToken from "../middleware/verifyToken.js";
@@ -7,22 +7,16 @@ import verifyUser from "../middleware/verifyUser.js";
 import cookieOptions from "../utils/cookieOptions.js";
 
 const authRoutes = (usersCollection) => {
-  const router = express.Router();
+  const router = Router();
 
-  const verifyDBUser = verifyUser(usersCollection);
-
-  /*
-  =====================================
-  POST /auth/jwt
-  Create JWT + Cookie
-  =====================================
-  */
+  // ==========================================
+  // POST /auth/jwt
+  // Create JWT Cookie
+  // ==========================================
 
   router.post("/jwt", async (req, res) => {
     try {
       const { email } = req.body;
-
-      // Validate Email
 
       if (!email || typeof email !== "string") {
         return res.status(400).json({
@@ -32,8 +26,6 @@ const authRoutes = (usersCollection) => {
       }
 
       const normalizedEmail = email.trim().toLowerCase();
-
-      // Find User
 
       const user = await usersCollection.findOne({
         email: normalizedEmail,
@@ -46,8 +38,6 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // Blocked User
-
       if (user.status === "blocked") {
         return res.status(403).json({
           success: false,
@@ -55,13 +45,9 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // Create JWT
-
       const token = createToken({
         email: normalizedEmail,
       });
-
-      // Set Cookie
 
       res.cookie("token", token, cookieOptions);
 
@@ -70,6 +56,7 @@ const authRoutes = (usersCollection) => {
         message: "Login successful.",
         role: user.role,
         user: {
+          _id: user._id,
           name: user.name,
           email: user.email,
           photo: user.photo,
@@ -86,11 +73,9 @@ const authRoutes = (usersCollection) => {
     }
   });
 
-  /*
-  =====================================
-  POST /auth/logout
-  =====================================
-  */
+  // ==========================================
+  // POST /auth/logout
+  // ==========================================
 
   router.post("/logout", (req, res) => {
     try {
@@ -113,36 +98,44 @@ const authRoutes = (usersCollection) => {
     }
   });
 
-  /*
-  =====================================
-  GET /auth/me
-  =====================================
-  */
+  // ==========================================
+  // GET /auth/me
+  // Logged In User
+  // ==========================================
 
-  router.get("/me", verifyToken, verifyDBUser, async (req, res) => {
-    try {
-      return res.status(200).json({
-        success: true,
-        user: {
-          _id: req.dbUser._id,
-          name: req.dbUser.name,
-          email: req.dbUser.email,
-          photo: req.dbUser.photo,
-          role: req.dbUser.role,
-          provider: req.dbUser.provider,
-          status: req.dbUser.status || "active",
-          createdAt: req.dbUser.createdAt,
-        },
-      });
-    } catch (error) {
-      console.error("GET /auth/me:", error);
+  router.get(
+    "/me",
+    verifyToken,
+    verifyUser(usersCollection),
+    async (req, res) => {
+      try {
+        const user = req.dbUser;
 
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch user.",
-      });
-    }
-  });
+        return res.status(200).json({
+          success: true,
+          user: {
+            _id: user._id,
+            name: user.name,
+            email: user.email,
+            photo: user.photo,
+            role: user.role,
+            provider: user.provider,
+            status: user.status,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt,
+            lastLogin: user.lastLogin,
+          },
+        });
+      } catch (error) {
+        console.error("GET /auth/me:", error);
+
+        return res.status(500).json({
+          success: false,
+          message: "Failed to fetch user.",
+        });
+      }
+    },
+  );
 
   return router;
 };
