@@ -14,15 +14,11 @@ import verifyAdmin from "../middleware/verifyAdmin.js";
 const usersRoutes = (usersCollection) => {
   const router = Router();
 
-  // ======================================================
-  // Helper : Normalize Email
-  // ======================================================
+
 
   const normalizeEmail = (email = "") => email.trim().toLowerCase();
 
-  // ======================================================
-  // Helper : Validate ObjectId
-  // ======================================================
+  
 
   const isValidObjectId = (id) => ObjectId.isValid(id);
 
@@ -51,9 +47,7 @@ const usersRoutes = (usersCollection) => {
 
       const normalizedEmail = normalizeEmail(email);
 
-      // ------------------------------
-      // Check Existing User
-      // ------------------------------
+
 
       const existingUser = await usersCollection.findOne({
         email: normalizedEmail,

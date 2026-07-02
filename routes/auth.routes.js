@@ -98,11 +98,6 @@ const authRoutes = (usersCollection) => {
     }
   });
 
-  // ==========================================
-  // GET /auth/me
-  // Logged In User
-  // ==========================================
-
   router.get(
     "/me",
     verifyToken,

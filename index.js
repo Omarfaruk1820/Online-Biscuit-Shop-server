@@ -745,10 +745,6 @@ app.delete("/carts/:id", verifyToken, async (req, res) => {
   }
 });
 
-//Orders apis
-// ======================================================
-// GET ALL ORDERS (ADMIN)
-// ======================================================
 app.get("/orders", verifyToken, verifyAdmin, async (req, res) => {
   try {
     let { status = "all", page = 1, limit = 10, search = "" } = req.query;
