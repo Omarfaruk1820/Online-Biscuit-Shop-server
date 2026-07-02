@@ -186,11 +186,7 @@ export {
 app.use("/auth", authRoutes(usersCollection));
 app.use("/users", usersRoutes(usersCollection));
 
-// console.log("PORT:", process.env.PORT);
-// console.log("CLIENT_URL:", process.env.CLIENT_URL);
-// console.log("CLIENT_URL_PROD:", process.env.CLIENT_URL_PROD);
-// console.log("DB_USERNAME:", process.env.DB_USERNAME);
-// console.log("JWT_SECRET:", process.env.JWT_SECRET?.slice(0, 10));
+
 
 
 // ====================== PRODUCTS ======================

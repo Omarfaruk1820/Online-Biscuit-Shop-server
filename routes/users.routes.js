@@ -26,10 +26,7 @@ const usersRoutes = (usersCollection) => {
 
   const isValidObjectId = (id) => ObjectId.isValid(id);
 
-  // ======================================================
-  // POST /users
-  // Save New User / Update Existing User
-  // ======================================================
+ 
 
   router.post("/", async (req, res) => {
     try {
