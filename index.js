@@ -27,19 +27,12 @@ app.use(cookieParser());
 
 app.use(
   cors({
-    origin: [
-      process.env.CLIENT_URL,
-      process.env.CLIENT_URL_PROD,
-    ],
+    origin: [process.env.CLIENT_URL, process.env.CLIENT_URL_PROD],
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
-
-
-
-
 
 const requiredEnv = ["DB_USERNAME", "DB_PASS", "JWT_SECRET"];
 
@@ -104,7 +97,6 @@ export const connectDB = async () => {
 
     console.log("✅ MongoDB Connected Successfully");
 
-  
     await usersCollection.createIndex({ email: 1 }, { unique: true });
 
     // PRODUCTS
@@ -151,9 +143,7 @@ export const connectDB = async () => {
 
 await connectDB();
 
-/* ======================================
-   GRACEFUL SHUTDOWN
-====================================== */
+
 
 process.on("SIGINT", async () => {
   try {
@@ -166,9 +156,7 @@ process.on("SIGINT", async () => {
   }
 });
 
-/* ======================================
-   EXPORTS
-====================================== */
+
 
 export {
   app,
@@ -185,9 +173,6 @@ export {
 
 app.use("/auth", authRoutes(usersCollection));
 app.use("/users", usersRoutes(usersCollection));
-
-
-
 
 // ====================== PRODUCTS ======================
 app.get("/products", async (req, res) => {
