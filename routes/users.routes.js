@@ -1,9 +1,3 @@
-// ======================================================
-// routes/users.routes.js
-// Part 1
-// Imports, Router, Helper Functions, POST /users
-// ======================================================
-
 import { Router } from "express";
 import { ObjectId } from "mongodb";
 
@@ -14,15 +8,9 @@ import verifyAdmin from "../middleware/verifyAdmin.js";
 const usersRoutes = (usersCollection) => {
   const router = Router();
 
-
-
   const normalizeEmail = (email = "") => email.trim().toLowerCase();
 
-  
-
   const isValidObjectId = (id) => ObjectId.isValid(id);
-
- 
 
   router.post("/", async (req, res) => {
     try {
@@ -46,8 +34,6 @@ const usersRoutes = (usersCollection) => {
       }
 
       const normalizedEmail = normalizeEmail(email);
-
-
 
       const existingUser = await usersCollection.findOne({
         email: normalizedEmail,

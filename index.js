@@ -816,9 +816,7 @@ app.get("/orders/my", verifyToken, async (req, res) => {
   }
 });
 
-// ======================================================
-// PLACE ORDER
-// ======================================================
+
 app.post("/orders", verifyToken, async (req, res) => {
   const session = client.startSession();
 
@@ -972,9 +970,7 @@ app.patch("/orders/cancel/:id", verifyToken, async (req, res) => {
   }
 });
 
-// ======================================================
-// SINGLE INVOICE JSON
-// ======================================================
+
 app.get("/orders/invoice/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
