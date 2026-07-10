@@ -143,8 +143,6 @@ export const connectDB = async () => {
 
 await connectDB();
 
-
-
 process.on("SIGINT", async () => {
   try {
     console.log("🔴 Closing MongoDB Connection...");
@@ -155,8 +153,6 @@ process.on("SIGINT", async () => {
     process.exit(1);
   }
 });
-
-
 
 export {
   app,
@@ -789,9 +785,6 @@ app.get("/orders", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-// ======================================================
-// MY ORDERS
-// ======================================================
 app.get("/orders/my", verifyToken, async (req, res) => {
   try {
     const email = req.user.email;
@@ -921,9 +914,6 @@ app.post("/orders", verifyToken, async (req, res) => {
   }
 });
 
-// ======================================================
-// CANCEL ORDER
-// ======================================================
 app.patch("/orders/cancel/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
