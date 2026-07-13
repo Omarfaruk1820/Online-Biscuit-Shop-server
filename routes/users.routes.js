@@ -22,10 +22,6 @@ const usersRoutes = (usersCollection) => {
         emailVerified = false,
       } = req.body;
 
-      // ------------------------------
-      // Email Validation
-      // ------------------------------
-
       if (!email || typeof email !== "string") {
         return res.status(400).json({
           success: false,
@@ -99,15 +95,6 @@ const usersRoutes = (usersCollection) => {
       });
     }
   });
-
-  // ======================================================
-  // Part 2 starts below...
-  // ======================================================
-  // ======================================================
-  // GET /users
-  // Admin Only
-  // Pagination + Search + Sorting
-  // ======================================================
 
   router.get(
     "/",
@@ -232,11 +219,6 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ======================================================
-  // GET /users/:email
-  // Get Single User
-  // ======================================================
-
   router.get(
     "/:email",
     verifyToken,
@@ -277,15 +259,6 @@ const usersRoutes = (usersCollection) => {
       }
     },
   );
-
-  // ======================================================
-  // Part 3 starts below...
-  // ======================================================
-  // ======================================================
-  // PATCH /users/:id/role
-  // Admin Only
-  // Change User Role
-  // ======================================================
 
   router.patch(
     "/:id/role",
@@ -357,12 +330,6 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ======================================================
-  // PATCH /users/:id/status
-  // Admin Only
-  // Block / Unblock User
-  // ======================================================
-
   router.patch(
     "/:id/status",
     verifyToken,
@@ -433,12 +400,6 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ======================================================
-  // DELETE /users/:id
-  // Admin Only
-  // Delete User
-  // ======================================================
-
   router.delete(
     "/:id",
     verifyToken,
@@ -492,10 +453,6 @@ const usersRoutes = (usersCollection) => {
       }
     },
   );
-
-  // ======================================================
-  // Export Router
-  // ======================================================
 
   return router;
 };

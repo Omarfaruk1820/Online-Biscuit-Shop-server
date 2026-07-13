@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 
 const verifyToken = (req, res, next) => {
+  console.log("VERIFY TOKEN MIDDLEWARE");
   try {
     let token = req.cookies?.token;
 
@@ -34,6 +35,7 @@ const verifyToken = (req, res, next) => {
 
     req.user = decoded;
 
+    console.log("TOKEN VERIFIED:", decoded.email);
     next();
   } catch (error) {
     if (error.name === "TokenExpiredError") {
