@@ -868,12 +868,6 @@ const cartsRoutes = (
     }
   });
 
-  // ==========================================================
-  // Part 8
-  // POST /carts/validate
-  // Validate Cart Before Checkout
-  // ==========================================================
-
   router.post("/validate", verifyToken, async (req, res) => {
     console.log("VALIDATE API HIT");
     try {
