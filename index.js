@@ -20,6 +20,8 @@ const app = express();
 import verifyToken from "./middleware/verifyToken.js";
 import verifyUser from "./middleware/verifyUser.js";
 import verifyAdmin from "./middleware/verifyAdmin.js";
+import invoiceRoutes from "./routes/invoice.routes.js";
+import cartsRoutes from "./routes/carts.routes.js";
 
 app.use(express.json());
 
@@ -169,6 +171,11 @@ export {
 
 app.use("/auth", authRoutes(usersCollection));
 app.use("/users", usersRoutes(usersCollection));
+app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
+app.use(
+  "/carts",
+  cartsRoutes(cartsCollection, productsCollection, verifyToken),
+);
 app.use(
   "/orders",
   ordersRoutes(
@@ -450,295 +457,6 @@ app.delete("/products/:id", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-// ====================== GET CART ======================
-app.post("/carts", verifyToken, async (req, res) => {
-  try {
-    const email = req.user?.email;
-
-    if (!email) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized",
-      });
-    }
-
-    const { productId, quantity = 1 } = req.body;
-
-    if (!productId || !ObjectId.isValid(productId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid product id",
-      });
-    }
-
-    const qty = Math.max(1, Math.min(99, Number(quantity) || 1));
-
-    const product = await productsCollection.findOne(
-      {
-        _id: new ObjectId(productId),
-      },
-      {
-        projection: {
-          name: 1,
-          image: 1,
-          price: 1,
-          discount: 1,
-        },
-      },
-    );
-
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message: "Product not found",
-      });
-    }
-
-    const price = Number(product.price || 0);
-    const discount = Number(product.discount || 0);
-
-    const finalPrice = Number((price - (price * discount) / 100).toFixed(2));
-
-    const existing = await cartsCollection.findOne({
-      email,
-      productId: new ObjectId(productId),
-    });
-
-    if (existing) {
-      const newQuantity = Number(existing.quantity) + qty;
-
-      await cartsCollection.updateOne(
-        { _id: existing._id },
-        {
-          $set: {
-            quantity: newQuantity,
-            subtotal: Number((newQuantity * finalPrice).toFixed(2)),
-            updatedAt: new Date(),
-          },
-        },
-      );
-
-      return res.status(200).json({
-        success: true,
-        message: "Cart updated",
-      });
-    }
-
-    const cartItem = {
-      email,
-      productId: new ObjectId(productId),
-
-      quantity: qty,
-
-      name: product.name,
-      // image: product.image,
-      image:
-        typeof product.image === "string"
-          ? product.image.replace(/[\[\]\(\)]/g, "").trim()
-          : "",
-
-      price,
-      discount,
-      finalPrice,
-
-      subtotal: Number((qty * finalPrice).toFixed(2)),
-
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    const result = await cartsCollection.insertOne(cartItem);
-
-    return res.status(201).json({
-      success: true,
-      insertedId: result.insertedId,
-      message: "Added to cart",
-    });
-  } catch (error) {
-    console.error("POST CART ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to add cart",
-    });
-  }
-});
-app.get("/carts", verifyToken, async (req, res) => {
-  try {
-    const email = req.user?.email;
-
-    if (!email) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized",
-      });
-    }
-
-    const carts = await cartsCollection
-      .find({ email })
-      .project({
-        email: 0,
-      })
-      .sort({
-        createdAt: -1,
-      })
-      .toArray();
-
-    const summary = carts.reduce(
-      (acc, item) => {
-        acc.totalItems += 1;
-        acc.totalQuantity += Number(item.quantity || 0);
-        acc.totalPrice += Number(item.subtotal || 0);
-
-        return acc;
-      },
-      {
-        totalItems: 0,
-        totalQuantity: 0,
-        totalPrice: 0,
-      },
-    );
-
-    summary.totalPrice = Number(summary.totalPrice.toFixed(2));
-
-    return res.status(200).json({
-      success: true,
-      data: carts,
-      summary,
-    });
-  } catch (error) {
-    console.error("GET CART ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch cart",
-    });
-  }
-});
-
-app.patch("/carts/:id", verifyToken, async (req, res) => {
-  try {
-    const email = req.user?.email;
-    const { id } = req.params;
-
-    const quantity = Number(req.body.quantity);
-
-    if (!email) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized",
-      });
-    }
-
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid cart id",
-      });
-    }
-
-    if (isNaN(quantity) || quantity < 1 || quantity > 99) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid quantity",
-      });
-    }
-
-    const cart = await cartsCollection.findOne(
-      {
-        _id: new ObjectId(id),
-        email,
-      },
-      {
-        projection: {
-          finalPrice: 1,
-        },
-      },
-    );
-
-    if (!cart) {
-      return res.status(404).json({
-        success: false,
-        message: "Cart not found",
-      });
-    }
-
-    const subtotal = Number((cart.finalPrice * quantity).toFixed(2));
-
-    await cartsCollection.updateOne(
-      {
-        _id: new ObjectId(id),
-        email,
-      },
-      {
-        $set: {
-          quantity,
-          subtotal,
-          updatedAt: new Date(),
-        },
-      },
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "Cart updated",
-    });
-  } catch (error) {
-    console.error("PATCH CART ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to update cart",
-    });
-  }
-});
-app.delete("/carts/:id", verifyToken, async (req, res) => {
-  try {
-    const email = req.user?.email;
-    const { id } = req.params;
-
-    if (!email) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized",
-      });
-    }
-
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid cart id",
-      });
-    }
-
-    const result = await cartsCollection.deleteOne({
-      _id: new ObjectId(id),
-      email,
-    });
-
-    if (!result.deletedCount) {
-      return res.status(404).json({
-        success: false,
-        message: "Cart item not found",
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: "Item removed successfully",
-    });
-  } catch (error) {
-    console.error("DELETE CART ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to delete cart item",
-    });
-  }
-});
-
-// MONTHLY SALES ANALYTICS
-// ======================================================
 app.get(
   "/admin/analytics/monthly-sales",
   verifyToken,
@@ -816,9 +534,6 @@ app.get(
   },
 );
 
-// ======================================================
-// TOP SELLING PRODUCTS
-// ======================================================
 app.get(
   "/admin/analytics/top-products",
   verifyToken,
@@ -884,9 +599,6 @@ app.get(
   },
 );
 
-// ======================================================
-// ADMIN DASHBOARD STATS
-// ======================================================
 app.get(
   "/admin/dashboard-stats",
   verifyToken,
@@ -975,7 +687,4 @@ app.get("/", (req, res) => {
   res.status(200).send("🍪 Biscuit Shop Server Running...");
 });
 
-// ======================================================
-// EXPORT APP
-// ======================================================
 export default app;

@@ -1,4 +1,4 @@
-// utils/invoice/shopInfo.js
+
 
 const SHOP_INFO = {
   name: "Biscuit Shop",

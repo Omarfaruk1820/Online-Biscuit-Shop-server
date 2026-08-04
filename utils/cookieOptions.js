@@ -1,4 +1,4 @@
-// utils/cookieOptions.js
+
 
 const cookieOptions = Object.freeze({
   httpOnly: true,
