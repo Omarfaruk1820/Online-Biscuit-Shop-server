@@ -12,253 +12,273 @@ const usersRoutes = (usersCollection) => {
 
   const isValidObjectId = (id) => ObjectId.isValid(id);
 
-  router.post("/", async (req, res) => {
-    try {
-      const {
-        name = "",
-        email,
-        photo = "",
-        provider = "password",
-        emailVerified = false,
-      } = req.body;
+ router.post("/", async (req, res) => {
+  try {
+    const {
+      name = "",
+      email,
+      photo = "",
+      provider = "password",
+      emailVerified = false,
+    } = req.body;
 
-      if (!email || typeof email !== "string") {
+    // =====================================
+    // Validate Email
+    // =====================================
+
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Valid email is required.",
+      });
+    }
+
+    const normalizedEmail = normalizeEmail(email);
+
+    const now = new Date();
+
+    // =====================================
+    // Upsert User
+    // =====================================
+
+    const result = await usersCollection.updateOne(
+      {
+        email: normalizedEmail,
+      },
+      {
+        $set: {
+          name: (name || "").trim(),
+          photo: photo || "",
+          provider:
+            provider === "google.com"
+              ? "google.com"
+              : "password",
+          emailVerified: Boolean(emailVerified),
+
+          updatedAt: now,
+          lastLogin: now,
+        },
+
+        $setOnInsert: {
+          email: normalizedEmail,
+
+          role: "user",
+
+          status: "active",
+
+          createdAt: now,
+        },
+      },
+      {
+        upsert: true,
+      }
+    );
+
+    return res.status(
+      result.upsertedCount ? 201 : 200
+    ).json({
+      success: true,
+
+      message: result.upsertedCount
+        ? "User created successfully."
+        : "User updated successfully.",
+    });
+  } catch (error) {
+    console.error("POST /users:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to save user.",
+    });
+  }
+});
+
+ router.get(
+  "/",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      // =====================================
+      // Pagination
+      // =====================================
+
+      let page = Number.parseInt(req.query.page, 10) || 1;
+      let limit = Number.parseInt(req.query.limit, 10) || 10;
+
+      page = Math.max(page, 1);
+      limit = Math.min(Math.max(limit, 1), 50);
+
+      const skip = (page - 1) * limit;
+
+      // =====================================
+      // Search
+      // =====================================
+
+      const search = req.query.search?.trim() || "";
+
+      const query = {};
+
+      if (search) {
+        query.$or = [
+          {
+            name: {
+              $regex: search,
+              $options: "i",
+            },
+          },
+          {
+            email: {
+              $regex: search,
+              $options: "i",
+            },
+          },
+        ];
+      }
+
+      // =====================================
+      // Sort
+      // =====================================
+
+      const sortMap = {
+        newest: { createdAt: -1 },
+        oldest: { createdAt: 1 },
+        name: { name: 1 },
+        email: { email: 1 },
+        role: { role: 1 },
+      };
+
+      const sortOption =
+        sortMap[req.query.sort] || sortMap.newest;
+
+      // =====================================
+      // Query
+      // =====================================
+
+      const [users, total] = await Promise.all([
+        usersCollection
+          .find(query)
+          .project({
+            name: 1,
+            email: 1,
+            photo: 1,
+            role: 1,
+            status: 1,
+            provider: 1,
+            emailVerified: 1,
+            createdAt: 1,
+            updatedAt: 1,
+            lastLogin: 1,
+          })
+          .sort(sortOption)
+          .skip(skip)
+          .limit(limit)
+          .toArray(),
+
+        usersCollection.countDocuments(query),
+      ]);
+
+      return res.status(200).json({
+        success: true,
+
+        page,
+
+        limit,
+
+        total,
+
+        totalPages: Math.ceil(total / limit),
+
+        hasNextPage: page * limit < total,
+
+        hasPrevPage: page > 1,
+
+        data: users,
+      });
+    } catch (error) {
+      console.error("GET /users:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch users.",
+      });
+    }
+  }
+);
+
+ router.get(
+  "/:email",
+  verifyToken,
+  verifyUser(usersCollection),
+  async (req, res) => {
+    try {
+      // =====================================
+      // Normalize & Validate Email
+      // =====================================
+
+      const email = normalizeEmail(req.params.email);
+
+      if (!email) {
         return res.status(400).json({
           success: false,
           message: "Valid email is required.",
         });
       }
 
-      const normalizedEmail = normalizeEmail(email);
+      // =====================================
+      // Find User
+      // =====================================
 
-      const existingUser = await usersCollection.findOne({
-        email: normalizedEmail,
-      });
-
-      // ------------------------------
-      // Existing User → Update
-      // ------------------------------
-
-      if (existingUser) {
-        await usersCollection.updateOne(
-          { email: normalizedEmail },
-          {
-            $set: {
-              name: name.trim(),
-              photo,
-              provider,
-              emailVerified,
-              lastLogin: new Date(),
-              updatedAt: new Date(),
-            },
+      const user = await usersCollection.findOne(
+        {
+          email,
+        },
+        {
+          projection: {
+            _id: 1,
+            name: 1,
+            email: 1,
+            photo: 1,
+            role: 1,
+            status: 1,
+            provider: 1,
+            emailVerified: 1,
+            createdAt: 1,
+            updatedAt: 1,
+            lastLogin: 1,
           },
-        );
+        }
+      );
 
-        return res.status(200).json({
-          success: true,
-          message: "User updated successfully.",
+      // =====================================
+      // Not Found
+      // =====================================
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found.",
         });
       }
 
-      // ------------------------------
-      // New User → Insert
-      // ------------------------------
+      // =====================================
+      // Response
+      // =====================================
 
-      const newUser = {
-        name: name.trim(),
-        email: normalizedEmail,
-        photo,
-        provider,
-        emailVerified,
-
-        role: "user",
-        status: "active",
-
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        lastLogin: new Date(),
-      };
-
-      const result = await usersCollection.insertOne(newUser);
-
-      return res.status(201).json({
+      return res.status(200).json({
         success: true,
-        message: "User created successfully.",
-        insertedId: result.insertedId,
+        data: user,
       });
     } catch (error) {
-      console.error("POST /users:", error);
+      console.error("GET /users/:email:", error);
 
       return res.status(500).json({
         success: false,
-        message: "Failed to save user.",
+        message: "Failed to fetch user.",
       });
     }
-  });
-
-  router.get(
-    "/",
-    verifyToken,
-    // verifyUser(usersCollection),
-    // verifyAdmin,
-    async (req, res) => {
-      try {
-        let { page = 1, limit = 10, search = "", sort = "newest" } = req.query;
-
-        page = Number(page);
-        limit = Number(limit);
-
-        if (Number.isNaN(page) || page < 1) page = 1;
-        if (Number.isNaN(limit) || limit < 1) limit = 10;
-
-        limit = Math.min(limit, 50);
-
-        const skip = (page - 1) * limit;
-
-        const query = {};
-
-        // ==========================================
-        // Search
-        // ==========================================
-
-        if (typeof search === "string" && search.trim()) {
-          const keyword = search.trim();
-
-          query.$or = [
-            {
-              name: {
-                $regex: keyword,
-                $options: "i",
-              },
-            },
-            {
-              email: {
-                $regex: keyword,
-                $options: "i",
-              },
-            },
-          ];
-        }
-
-        // ==========================================
-        // Sorting
-        // ==========================================
-
-        let sortOption = {
-          createdAt: -1,
-        };
-
-        switch (sort) {
-          case "oldest":
-            sortOption = {
-              createdAt: 1,
-            };
-            break;
-
-          case "name":
-            sortOption = {
-              name: 1,
-            };
-            break;
-
-          case "email":
-            sortOption = {
-              email: 1,
-            };
-            break;
-
-          case "role":
-            sortOption = {
-              role: 1,
-            };
-            break;
-
-          default:
-            sortOption = {
-              createdAt: -1,
-            };
-        }
-
-        // ==========================================
-        // Get Users
-        // ==========================================
-
-        const users = await usersCollection
-          .find(query)
-          .project({
-            password: 0,
-          })
-          .sort(sortOption)
-          .skip(skip)
-          .limit(limit)
-          .toArray();
-
-        const total = await usersCollection.countDocuments(query);
-
-        return res.status(200).json({
-          success: true,
-
-          page,
-
-          limit,
-
-          total,
-
-          totalPages: Math.ceil(total / limit),
-
-          data: users,
-        });
-      } catch (error) {
-        console.error("GET /users:", error);
-
-        return res.status(500).json({
-          success: false,
-          message: "Failed to fetch users.",
-        });
-      }
-    },
-  );
-
-  router.get(
-    "/:email",
-    verifyToken,
-    verifyUser(usersCollection),
-    async (req, res) => {
-      try {
-        const email = normalizeEmail(req.params.email);
-
-        const user = await usersCollection.findOne(
-          {
-            email,
-          },
-          {
-            projection: {
-              password: 0,
-            },
-          },
-        );
-
-        if (!user) {
-          return res.status(404).json({
-            success: false,
-            message: "User not found.",
-          });
-        }
-
-        return res.status(200).json({
-          success: true,
-          data: user,
-        });
-      } catch (error) {
-        console.error("GET /users/:email:", error);
-
-        return res.status(500).json({
-          success: false,
-          message: "Failed to fetch user.",
-        });
-      }
-    },
-  );
+  }
+);
 
   router.patch(
     "/:id/role",

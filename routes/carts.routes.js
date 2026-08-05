@@ -10,136 +10,133 @@ const cartsRoutes = (
 ) => {
   const router = Router();
 
-  // ==========================================================
-  // Part 1
-  // GET /carts
-  // Get Logged-in User's Cart
-  // ==========================================================
+ 
 
-  router.get("/", verifyToken, async (req, res) => {
-    try {
-      const email = req.user?.email;
+router.get("/", verifyToken, async (req, res) => {
+  try {
+    // ===================================
+    // AUTHORIZATION
+    // ===================================
 
-      // -----------------------------------
-      // Authorization
-      // -----------------------------------
+    const email = req.user?.email;
 
-      if (!email) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized.",
-        });
-      }
+    if (!email) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized.",
+      });
+    }
 
-      // -----------------------------------
-      // Fetch User Cart
-      // -----------------------------------
+    // ===================================
+    // FETCH USER CART
+    // ===================================
 
-      const cart = await cartsCollection
-        .find({ email })
-        .project({
-          email: 0,
-        })
-        .sort({
-          createdAt: -1,
-        })
-        .toArray();
-
-      // -----------------------------------
-      // Empty Cart
-      // -----------------------------------
-
-      if (!cart.length) {
-        return res.status(200).json({
-          success: true,
-          count: 0,
-          data: [],
-          summary: {
-            totalItems: 0,
-            totalQuantity: 0,
-            subtotal: 0,
-            discount: 0,
-            shipping: 0,
-            tax: 0,
-            grandTotal: 0,
-          },
-        });
-      }
-
-      // -----------------------------------
-      // Cart Summary
-      // -----------------------------------
-
-      const summary = cart.reduce(
-        (acc, item) => {
-          const quantity = Number(item.quantity || 0);
-          const price = Number(item.price || 0);
-          const finalPrice = Number(item.finalPrice || price);
-
-          acc.totalItems += 1;
-
-          acc.totalQuantity += quantity;
-
-          acc.subtotal += Number(item.subtotal || 0);
-
-          acc.discount += Number(((price - finalPrice) * quantity).toFixed(2));
-
-          return acc;
-        },
+    const cart = await cartsCollection
+      .find(
+        { email },
         {
+          projection: {
+            email: 0,
+          },
+        },
+      )
+      .sort({
+        createdAt: -1,
+      })
+      .toArray();
+
+    // ===================================
+    // EMPTY CART
+    // ===================================
+
+    if (cart.length === 0) {
+      return res.status(200).json({
+        success: true,
+        count: 0,
+        data: [],
+        summary: {
           totalItems: 0,
           totalQuantity: 0,
           subtotal: 0,
           discount: 0,
+          shipping: 0,
+          tax: 0,
+          grandTotal: 0,
         },
-      );
-
-      summary.subtotal = Number(summary.subtotal.toFixed(2));
-
-      summary.discount = Number(summary.discount.toFixed(2));
-
-      // -----------------------------------
-      // Shipping
-      // -----------------------------------
-
-      summary.shipping = summary.subtotal >= 1000 ? 0 : 60;
-
-      // -----------------------------------
-      // Tax
-      // -----------------------------------
-
-      summary.tax = 0;
-
-      // -----------------------------------
-      // Grand Total
-      // -----------------------------------
-
-      summary.grandTotal = Number(
-        (summary.subtotal + summary.shipping + summary.tax).toFixed(2),
-      );
-
-      // -----------------------------------
-      // Response
-      // -----------------------------------
-
-      return res.status(200).json({
-        success: true,
-
-        count: cart.length,
-
-        data: cart,
-
-        summary,
-      });
-    } catch (error) {
-      console.error("GET CART ERROR:", error);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to load cart.",
       });
     }
-  });
+
+    // ===================================
+    // SUMMARY
+    // ===================================
+
+    let totalItems = 0;
+    let totalQuantity = 0;
+    let subtotal = 0;
+    let discount = 0;
+
+    for (const item of cart) {
+      const quantity = Number(item.quantity) || 0;
+      const price = Number(item.price) || 0;
+      const finalPrice = Number(item.finalPrice) || price;
+      const itemSubtotal = Number(item.subtotal) || 0;
+
+      totalItems += 1;
+      totalQuantity += quantity;
+      subtotal += itemSubtotal;
+      discount += (price - finalPrice) * quantity;
+    }
+
+    subtotal = Number(subtotal.toFixed(2));
+    discount = Number(discount.toFixed(2));
+
+    // ===================================
+    // SHIPPING
+    // ===================================
+
+    const shipping = subtotal >= 1000 ? 0 : 60;
+
+    // ===================================
+    // TAX
+    // ===================================
+
+    const tax = 0;
+
+    // ===================================
+    // GRAND TOTAL
+    // ===================================
+
+    const grandTotal = Number(
+      (subtotal + shipping + tax).toFixed(2),
+    );
+
+    // ===================================
+    // RESPONSE
+    // ===================================
+
+    return res.status(200).json({
+      success: true,
+      count: cart.length,
+      data: cart,
+      summary: {
+        totalItems,
+        totalQuantity,
+        subtotal,
+        discount,
+        shipping,
+        tax,
+        grandTotal,
+      },
+    });
+  } catch (error) {
+    console.error("GET CART ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load cart.",
+    });
+  }
+});
 
   router.post("/", verifyToken, async (req, res) => {
     try {
@@ -491,11 +488,7 @@ const cartsRoutes = (
     }
   });
 
-  // ==========================================================
-  // Part 3
-  // PATCH /carts/:id
-  // Update Cart Quantity
-  // ==========================================================
+
 
   router.patch("/:id", verifyToken, async (req, res) => {
     try {
@@ -658,11 +651,7 @@ const cartsRoutes = (
       });
     }
   });
-  // ==========================================================
-  // Part 4
-  // DELETE /carts/:id
-  // Remove One Cart Item
-  // ==========================================================
+
 
   router.delete("/:id", verifyToken, async (req, res) => {
     try {

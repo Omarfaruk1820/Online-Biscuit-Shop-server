@@ -74,61 +74,120 @@ let ordersCollection;
 
 export const connectDB = async () => {
   try {
+    // ======================================
+    // REUSE EXISTING CONNECTION
+    // ======================================
+
     if (db) {
       console.log("⚡ MongoDB already connected");
       return db;
     }
 
+    // ======================================
+    // CREATE MONGODB CLIENT
+    // ======================================
+
     client = new MongoClient(uri, {
       serverApi: {
         version: ServerApiVersion.v1,
+        strict: true,
         deprecationErrors: true,
       },
     });
 
+    // ======================================
+    // CONNECT DATABASE
+    // ======================================
+
     await client.connect();
 
     db = client.db(DB_NAME);
+
+    // ======================================
+    // COLLECTIONS
+    // ======================================
 
     productsCollection = db.collection("products");
     usersCollection = db.collection("users");
     cartsCollection = db.collection("carts");
     ordersCollection = db.collection("orders");
 
+    // ======================================
+    // VERIFY CONNECTION
+    // ======================================
+
     await db.command({ ping: 1 });
 
     console.log("✅ MongoDB Connected Successfully");
 
-    await usersCollection.createIndex({ email: 1 }, { unique: true });
+    // ======================================
+    // CREATE INDEX IF NOT EXISTS
+    // ======================================
 
-    // PRODUCTS
-    await productsCollection.createIndex({
-      category: 1,
-    });
+    const createIndexIfMissing = async (
+      collection,
+      key,
+      options = {}
+    ) => {
+      const indexes = await collection.indexes();
 
-    // CARTS
-    await cartsCollection.createIndex(
-      {
-        email: 1,
-        productId: 1,
-      },
-      {
-        unique: true,
-      },
-    );
+      const exists = indexes.some((index) => {
+        return JSON.stringify(index.key) === JSON.stringify(key);
+      });
 
-    // ORDERS
-    await ordersCollection.createIndex({
-      createdAt: -1,
-    });
+      if (!exists) {
+        await collection.createIndex(key, options);
+      }
+    };
 
-    await ordersCollection.createIndex({
-      email: 1,
-    });
+    // ======================================
+    // CREATE INDEXES
+    // ======================================
 
-    await ordersCollection.createIndex({
-      status: 1,
-    });
+    await Promise.all([
+      // USERS
+      createIndexIfMissing(
+        usersCollection,
+        { email: 1 },
+        { unique: true }
+      ),
+
+      // PRODUCTS
+      createIndexIfMissing(
+        productsCollection,
+        { category: 1 }
+      ),
+
+      // CARTS
+      createIndexIfMissing(
+        cartsCollection,
+        {
+          email: 1,
+          productId: 1,
+        },
+        {
+          unique: true,
+        }
+      ),
+
+      createIndexIfMissing(
+        cartsCollection,
+        {
+          email: 1,
+          createdAt: -1,
+        }
+      ),
+
+      // ORDERS
+      createIndexIfMissing(
+        ordersCollection,
+        {
+          email: 1,
+          status: 1,
+          createdAt: -1,
+        }
+      ),
+    ]);
 
     console.log("✅ Database Indexes Ready");
 
