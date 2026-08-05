@@ -4,6 +4,7 @@ import { ObjectId } from "mongodb";
 import buildOrderItems from "../utils/buildOrderItems.js";
 import calculateOrderTotal from "../utils/calculateOrderTotal.js";
 import isValidStatus from "../utils/isValidStatus.js";
+import calculateOrderSummary from "../utils/calculateOrderSummary.js";
 
 const ordersRoutes = (
   client,
@@ -22,152 +23,165 @@ const ordersRoutes = (
   // ==========================================================
   // ==========================================================
 
-  router.get("/", verifyToken, verifyAdmin, async (req, res) => {
-    try {
-      // --------------------------------------------------
-      // Query Parameters
-      // --------------------------------------------------
+ router.get("/", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    // -------------------------------------
+    // Query Parameters
+    // -------------------------------------
 
-      let {
-        page = "1",
-        limit = "10",
-        search = "",
-        status = "all",
-        sort = "newest",
-      } = req.query;
+    let {
+      page = "1",
+      limit = "10",
+      search = "",
+      status = "all",
+      sort = "newest",
+    } = req.query;
 
-      page = Math.max(parseInt(page, 10) || 1, 1);
-      limit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
+    page = Math.max(parseInt(page, 10) || 1, 1);
+    limit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
 
-      const skip = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-      search = String(search).trim().slice(0, 100);
+    search = String(search).trim().slice(0, 100);
 
-      // --------------------------------------------------
-      // Validate Filters
-      // --------------------------------------------------
+    // -------------------------------------
+    // Validate Filters
+    // -------------------------------------
 
-      const allowedStatuses = [
-        "all",
-        "pending",
-        "confirmed",
-        "processing",
-        "shipped",
-        "delivered",
-        "cancelled",
-      ];
+    const allowedStatuses = [
+      "all",
+      "pending",
+      "confirmed",
+      "processing",
+      "shipped",
+      "delivered",
+      "cancelled",
+    ];
 
-      if (!allowedStatuses.includes(status)) {
-        status = "all";
-      }
+    status = allowedStatuses.includes(status)
+      ? status
+      : "all";
 
-      const allowedSorts = ["newest", "oldest", "highest", "lowest"];
+    const allowedSorts = [
+      "newest",
+      "oldest",
+      "highest",
+      "lowest",
+    ];
 
-      if (!allowedSorts.includes(sort)) {
-        sort = "newest";
-      }
+    sort = allowedSorts.includes(sort)
+      ? sort
+      : "newest";
 
-      // --------------------------------------------------
-      // Mongo Query
-      // --------------------------------------------------
+    // -------------------------------------
+    // Mongo Query
+    // -------------------------------------
 
-      const query = {};
+    const query = {};
 
-      if (status !== "all") {
-        query.status = status;
-      }
-
-      if (search) {
-        const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-        query.$or = [
-          {
-            email: {
-              $regex: escapedSearch,
-              $options: "i",
-            },
-          },
-          {
-            "customer.name": {
-              $regex: escapedSearch,
-              $options: "i",
-            },
-          },
-          {
-            "customer.phone": {
-              $regex: escapedSearch,
-              $options: "i",
-            },
-          },
-          {
-            orderNumber: {
-              $regex: escapedSearch,
-              $options: "i",
-            },
-          },
-        ];
-      }
-
-      // --------------------------------------------------
-      // Sorting
-      // --------------------------------------------------
-
-      const sortOptions = {
-        newest: { createdAt: -1 },
-        oldest: { createdAt: 1 },
-        highest: { total: -1 },
-        lowest: { total: 1 },
-      };
-
-      // --------------------------------------------------
-      // Query Database
-      // --------------------------------------------------
-
-      const [orders, totalOrders] = await Promise.all([
-        ordersCollection
-          .find(query)
-          .project({
-            items: 0,
-          })
-          .sort(sortOptions[sort])
-          .skip(skip)
-          .limit(limit)
-          .toArray(),
-
-        ordersCollection.countDocuments(query),
-      ]);
-
-      // --------------------------------------------------
-      // Response
-      // --------------------------------------------------
-
-      return res.status(200).json({
-        success: true,
-
-        data: orders,
-
-        pagination: {
-          page,
-          limit,
-          totalOrders,
-          totalPages: Math.ceil(totalOrders / limit),
-        },
-
-        filters: {
-          search,
-          status,
-          sort,
-        },
-      });
-    } catch (error) {
-      console.error("GET ORDERS ERROR:", error);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch orders.",
-      });
+    if (status !== "all") {
+      query.status = status;
     }
-  });
+
+    if (search) {
+      const escapedSearch = search.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
+      query.$or = [
+        {
+          email: {
+            $regex: escapedSearch,
+            $options: "i",
+          },
+        },
+        {
+          "customer.name": {
+            $regex: escapedSearch,
+            $options: "i",
+          },
+        },
+        {
+          "customer.phone": {
+            $regex: escapedSearch,
+            $options: "i",
+          },
+        },
+        {
+          orderNumber: {
+            $regex: escapedSearch,
+            $options: "i",
+          },
+        },
+      ];
+    }
+
+    // -------------------------------------
+    // Sort Options
+    // -------------------------------------
+
+    const sortOptions = {
+      newest: { createdAt: -1 },
+      oldest: { createdAt: 1 },
+      highest: { grandTotal: -1 },
+      lowest: { grandTotal: 1 },
+    };
+
+    // -------------------------------------
+    // Database Query
+    // -------------------------------------
+
+    const [orders, totalOrders] = await Promise.all([
+      ordersCollection
+        .find(query)
+        .project({
+          items: 0,
+          timeline: 0,
+        })
+        .sort(sortOptions[sort])
+        .skip(skip)
+        .limit(limit)
+        .toArray(),
+
+      ordersCollection.countDocuments(query),
+    ]);
+
+    const totalPages = Math.ceil(totalOrders / limit);
+
+    // -------------------------------------
+    // Response
+    // -------------------------------------
+
+    return res.status(200).json({
+      success: true,
+      message: "Orders fetched successfully.",
+      data: orders,
+
+      pagination: {
+        page,
+        limit,
+        totalOrders,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+
+      filters: {
+        search,
+        status,
+        sort,
+      },
+    });
+  } catch (error) {
+    console.error("GET ORDERS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch orders.",
+    });
+  }
+});
 
   // ==========================================================
   // Part 3
@@ -176,78 +190,72 @@ const ordersRoutes = (
   // ==========================================================
   // ==========================================================
 
-  router.get("/:id", verifyToken, verifyAdmin, async (req, res) => {
-    try {
-      // --------------------------------------------------
-      // Validate Order ID
-      // --------------------------------------------------
+ router.get("/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    // --------------------------------------------------
+    // Validate Order ID
+    // --------------------------------------------------
 
-      const { id } = req.params;
+    const { id } = req.params;
 
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid order ID.",
-        });
-      }
-
-      const orderId = new ObjectId(id);
-
-      // --------------------------------------------------
-      // Find Order
-      // --------------------------------------------------
-
-      const order = await ordersCollection.findOne({
-        _id: orderId,
-      });
-
-      if (!order) {
-        return res.status(404).json({
-          success: false,
-          message: "Order not found.",
-        });
-      }
-
-      // --------------------------------------------------
-      // Calculate Summary
-      // --------------------------------------------------
-
-      const items = Array.isArray(order.items) ? order.items : [];
-
-      const totalItems = items.length;
-
-      const totalQuantity = items.reduce((sum, item) => {
-        const quantity = Number(item?.quantity);
-
-        return Number.isInteger(quantity) ? sum + quantity : sum;
-      }, 0);
-
-      // --------------------------------------------------
-      // Response
-      // --------------------------------------------------
-
-      return res.status(200).json({
-        success: true,
-
-        data: {
-          ...order,
-
-          summary: {
-            totalItems,
-            totalQuantity,
-            totalAmount: Number(order.total) || 0,
-          },
-        },
-      });
-    } catch (error) {
-      console.error("GET ORDER ERROR:", error);
-
-      return res.status(500).json({
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
         success: false,
-        message: "Failed to fetch order.",
+        message: "Invalid order ID.",
       });
     }
-  });
+
+    // --------------------------------------------------
+    // Find Order
+    // --------------------------------------------------
+
+    const order = await ordersCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found.",
+      });
+    }
+
+    // --------------------------------------------------
+    // Response
+    // --------------------------------------------------
+
+    return res.status(200).json({
+      success: true,
+      message: "Order fetched successfully.",
+
+      data: {
+        ...order,
+
+        summary: {
+          totalItems: Number(order.totalItems || 0),
+          totalQuantity: Number(order.totalQuantity || 0),
+
+          subtotal: Number(order.subtotal || 0),
+
+          totalDiscount: Number(order.totalDiscount || 0),
+
+          shipping: Number(order.shipping || 0),
+
+          tax: Number(order.tax || 0),
+
+          grandTotal: Number(order.grandTotal || 0),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("GET ORDER ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch order.",
+    });
+  }
+});
 
   // ==========================================================
   // Part 4
@@ -255,10 +263,7 @@ const ordersRoutes = (
   // Logged-in User Orders
   // ==========================================================
   // ==========================================================
-  // Part 4
-  // GET /orders/my
-  // Logged-in User Orders
-  // ==========================================================
+
 
   router.get("/my", verifyToken, async (req, res) => {
     try {
@@ -495,190 +500,207 @@ const ordersRoutes = (
   // Create New Order
   // ==========================================================
 
-  router.post("/", verifyToken, async (req, res) => {
-    const session = client.startSession();
+router.post("/", verifyToken, async (req, res) => {
+  const session = client.startSession();
 
-    try {
-      const email = req.user.email;
-      const { customer, paymentMethod = "cash_on_delivery" } = req.body;
+  try {
+    // ----------------------------------
+    // Authorization
+    // ----------------------------------
 
-      // --------------------------------------------------
-      // Validate Customer
-      // --------------------------------------------------
+    const email = req.user?.email;
 
-      if (!customer || typeof customer !== "object") {
-        return res.status(400).json({
-          success: false,
-          message: "Customer information is required.",
-        });
-      }
-
-      const customerSnapshot = {
-        name: String(customer.name || "").trim(),
-        phone: String(customer.phone || "").trim(),
-        address: String(customer.address || "").trim(),
-        city: String(customer.city || "").trim(),
-        area: String(customer.area || "").trim(),
-        note: String(customer.note || "").trim(),
-      };
-
-      if (
-        !customerSnapshot.name ||
-        !customerSnapshot.phone ||
-        !customerSnapshot.address
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Name, phone and address are required.",
-        });
-      }
-
-      // --------------------------------------------------
-      // Get Cart
-      // --------------------------------------------------
-
-      const cartItems = await cartsCollection.find({ email }).toArray();
-
-      if (cartItems.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Your cart is empty.",
-        });
-      }
-
-      if (cartItems.length > 100) {
-        return res.status(400).json({
-          success: false,
-          message: "Cart limit exceeded.",
-        });
-      }
-
-      // --------------------------------------------------
-      // Duplicate Product Check
-      // --------------------------------------------------
-
-      const ids = cartItems.map((item) => item.productId.toString());
-
-      if (new Set(ids).size !== ids.length) {
-        return res.status(400).json({
-          success: false,
-          message: "Duplicate products found in cart.",
-        });
-      }
-
-      // --------------------------------------------------
-      // Build Items
-      // --------------------------------------------------
-
-      const items = await buildOrderItems(cartItems, productsCollection);
-
-      if (items.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "No valid products found.",
-        });
-      }
-
-      // --------------------------------------------------
-      // Calculate Summary
-      // --------------------------------------------------
-
-      const totalItems = items.length;
-
-      const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
-
-      const total = calculateOrderTotal(items);
-
-      const now = new Date();
-
-      // --------------------------------------------------
-      // Order
-      // --------------------------------------------------
-
-      const order = {
-        orderNumber: `ORD-${Date.now()}`,
-
-        email,
-
-        customer: customerSnapshot,
-
-        items,
-
-        total,
-
-        totalItems,
-
-        totalQuantity,
-
-        currency: "BDT",
-
-        paymentMethod,
-
-        paymentStatus: "unpaid",
-
-        status: "pending",
-
-        timeline: [
-          {
-            status: "pending",
-            createdAt: now,
-          },
-        ],
-
-        createdAt: now,
-
-        updatedAt: now,
-      };
-
-      let insertedId;
-
-      // --------------------------------------------------
-      // Transaction
-      // --------------------------------------------------
-
-      await session.withTransaction(async () => {
-        const result = await ordersCollection.insertOne(order, {
-          session,
-        });
-
-        insertedId = result.insertedId;
-
-        await cartsCollection.deleteMany({ email }, { session });
-      });
-
-      // --------------------------------------------------
-      // Response
-      // --------------------------------------------------
-
-      return res.status(201).json({
-        success: true,
-        message: "Order placed successfully.",
-
-        orderId: insertedId,
-
-        order: {
-          _id: insertedId,
-          orderNumber: order.orderNumber,
-          total: order.total,
-          totalItems: order.totalItems,
-          totalQuantity: order.totalQuantity,
-          paymentStatus: order.paymentStatus,
-          paymentMethod: order.paymentMethod,
-          status: order.status,
-          createdAt: order.createdAt,
-        },
-      });
-    } catch (error) {
-      console.error("CREATE ORDER ERROR:", error);
-
-      return res.status(500).json({
+    if (!email) {
+      return res.status(401).json({
         success: false,
-        message: error.message || "Failed to place order.",
+        message: "Unauthorized.",
       });
-    } finally {
-      await session.endSession();
     }
-  });
+
+    // ----------------------------------
+    // Request Body
+    // ----------------------------------
+
+    const {
+      customer,
+      paymentMethod = "cash_on_delivery",
+    } = req.body;
+
+    // ----------------------------------
+    // Validate Payment Method
+    // ----------------------------------
+
+    const allowedMethods = [
+      "cash_on_delivery",
+      "online",
+    ];
+
+    if (!allowedMethods.includes(paymentMethod)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment method.",
+      });
+    }
+
+    // ----------------------------------
+    // Validate Customer
+    // ----------------------------------
+
+    if (!customer) {
+      return res.status(400).json({
+        success: false,
+        message: "Customer information is required.",
+      });
+    }
+
+    const customerSnapshot = {
+      name: String(customer.name || "").trim(),
+      phone: String(customer.phone || "").trim(),
+      address: String(customer.address || "").trim(),
+      city: String(customer.city || "").trim(),
+      area: String(customer.area || "").trim(),
+      note: String(customer.note || "").trim(),
+    };
+
+    if (
+      !customerSnapshot.name ||
+      !customerSnapshot.phone ||
+      !customerSnapshot.address
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Name, phone and address are required.",
+      });
+    }
+
+    // ----------------------------------
+    // Load Cart
+    // ----------------------------------
+
+    const cartItems = await cartsCollection.find({ email }).toArray();
+
+    if (cartItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Your cart is empty.",
+      });
+    }
+
+    // ----------------------------------
+    // Build Order Items
+    // ----------------------------------
+
+    const items = await buildOrderItems(
+      cartItems,
+      productsCollection
+    );
+
+    if (items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid products found.",
+      });
+    }
+
+    // ----------------------------------
+    // Calculate Summary
+    // ----------------------------------
+
+    const summary = calculateOrderSummary(items);
+
+    const now = new Date();
+
+    // ----------------------------------
+    // Order Document
+    // ----------------------------------
+
+    const order = {
+      orderNumber: `ORD-${Date.now()}`,
+
+      email,
+
+      customer: customerSnapshot,
+
+      items,
+
+      ...summary,
+
+      currency: "BDT",
+
+      paymentMethod,
+
+      paymentStatus: "unpaid",
+
+      status: "pending",
+
+      timeline: [
+        {
+          status: "pending",
+          createdAt: now,
+        },
+      ],
+
+      createdAt: now,
+
+      updatedAt: now,
+    };
+
+    let insertedId;
+
+    // ----------------------------------
+    // Transaction
+    // ----------------------------------
+
+    await session.withTransaction(async () => {
+      const result = await ordersCollection.insertOne(order, {
+        session,
+      });
+
+      insertedId = result.insertedId;
+
+      await cartsCollection.deleteMany(
+        { email },
+        { session }
+      );
+    });
+
+    // ----------------------------------
+    // Success Response
+    // ----------------------------------
+
+    return res.status(201).json({
+      success: true,
+      message: "Order placed successfully.",
+
+      orderId: insertedId,
+
+      order: {
+        _id: insertedId,
+
+        orderNumber: order.orderNumber,
+
+        ...summary,
+
+        paymentMethod: order.paymentMethod,
+
+        paymentStatus: order.paymentStatus,
+
+        status: order.status,
+
+        createdAt: order.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("CREATE ORDER ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to place order.",
+    });
+  } finally {
+    await session.endSession();
+  }
+});
 
   // ==========================================================
   // Part 7
