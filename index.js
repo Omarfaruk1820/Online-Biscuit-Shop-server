@@ -1,54 +1,100 @@
+/* ==========================================================
+   IMPORTS
+========================================================== */
+
 import dotenv from "dotenv";
 dotenv.config();
+
 import express from "express";
 import cors from "cors";
-
 import cookieParser from "cookie-parser";
+
 import jwt from "jsonwebtoken";
 import PDFDocument from "pdfkit";
 
-import usersRoutes from "./routes/users.routes.js";
+import { MongoClient, ObjectId, ServerApiVersion } from "mongodb";
+
+/* ==========================================================
+   ROUTES
+========================================================== */
+
 import authRoutes from "./routes/auth.routes.js";
+import usersRoutes from "./routes/users.routes.js";
+import cartsRoutes from "./routes/carts.routes.js";
 import ordersRoutes from "./routes/orders.routes.js";
-import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+import invoiceRoutes from "./routes/invoice.routes.js";
 
-const app = express();
-
-/* ======================================
+/* ==========================================================
    MIDDLEWARE
-====================================== */
+========================================================== */
+
 import verifyToken from "./middleware/verifyToken.js";
 import verifyUser from "./middleware/verifyUser.js";
 import verifyAdmin from "./middleware/verifyAdmin.js";
-import invoiceRoutes from "./routes/invoice.routes.js";
-import cartsRoutes from "./routes/carts.routes.js";
 
-app.use(express.json());
+/* ==========================================================
+   EXPRESS APP
+========================================================== */
+
+const app = express();
+
+/* ==========================================================
+   SECURITY
+========================================================== */
+
+// Hide Express Signature Header
+app.disable("x-powered-by");
+
+/* ==========================================================
+   REQUIRED ENV VARIABLES
+========================================================== */
+
+const REQUIRED_ENV = [
+  "DB_USERNAME",
+  "DB_PASS",
+  "DB_NAME",
+  "JWT_SECRET",
+  "CLIENT_URL",
+  "CLIENT_URL_PROD",
+];
+
+for (const env of REQUIRED_ENV) {
+  if (!process.env[env]) {
+    throw new Error(`❌ Missing ENV Variable: ${env}`);
+  }
+}
+
+/* ==========================================================
+   MIDDLEWARE
+========================================================== */
+
+app.use(
+  express.json({
+    limit: "2mb",
+  }),
+);
 
 app.use(cookieParser());
 
 app.use(
   cors({
     origin: [process.env.CLIENT_URL, process.env.CLIENT_URL_PROD],
+
     credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+
     allowedHeaders: ["Content-Type", "Authorization"],
+
+    optionsSuccessStatus: 200,
   }),
 );
 
-const requiredEnv = ["DB_USERNAME", "DB_PASS", "JWT_SECRET"];
+/* ==========================================================
+   DATABASE CONFIGURATION
+========================================================== */
 
-requiredEnv.forEach((env) => {
-  if (!process.env[env]) {
-    throw new Error(`❌ Missing ENV Variable: ${env}`);
-  }
-});
-
-/* ======================================
-   DATABASE CONFIG
-====================================== */
-
-const DB_NAME = process.env.DB_NAME || "biscuit_shop_db";
+const DB_NAME = process.env.DB_NAME;
 
 const uri = `mongodb+srv://${encodeURIComponent(
   process.env.DB_USERNAME,
@@ -56,78 +102,99 @@ const uri = `mongodb+srv://${encodeURIComponent(
   process.env.DB_PASS,
 )}@cluster0.g29mryf.mongodb.net/?retryWrites=true&w=majority`;
 
-/* ======================================
-   DATABASE VARIABLES
-====================================== */
+/* ==========================================================
+   MONGODB CLIENT
+========================================================== */
 
 let client;
+
 let db;
 
 let productsCollection;
+
 let usersCollection;
+
 let cartsCollection;
+
 let ordersCollection;
 
-/* ======================================
+/* ==========================================================
+   MONGODB CONNECTION OPTIONS
+
+   ✔ Better Performance
+   ✔ Connection Pooling
+   ✔ Lower Connection Latency
+========================================================== */
+
+const mongoOptions = {
+  maxPoolSize: 20,
+
+  minPoolSize: 5,
+
+  maxIdleTimeMS: 30000,
+
+  serverApi: {
+    version: ServerApiVersion.v1,
+
+    strict: true,
+
+    deprecationErrors: true,
+  },
+};
+/* ==========================================================
    CONNECT DATABASE
-====================================== */
+========================================================== */
 
 export const connectDB = async () => {
   try {
-    // ======================================
-    // REUSE EXISTING CONNECTION
-    // ======================================
+    /* ======================================================
+       REUSE EXISTING CONNECTION
+    ====================================================== */
 
     if (db) {
       console.log("⚡ MongoDB already connected");
       return db;
     }
 
-    // ======================================
-    // CREATE MONGODB CLIENT
-    // ======================================
+    /* ======================================================
+       CREATE CLIENT
+    ====================================================== */
 
-    client = new MongoClient(uri, {
-      serverApi: {
-        version: ServerApiVersion.v1,
-        strict: true,
-        deprecationErrors: true,
-      },
-    });
+    client = new MongoClient(uri, mongoOptions);
 
-    // ======================================
-    // CONNECT DATABASE
-    // ======================================
+    /* ======================================================
+       CONNECT
+    ====================================================== */
 
     await client.connect();
 
     db = client.db(DB_NAME);
 
-    // ======================================
-    // COLLECTIONS
-    // ======================================
+    /* ======================================================
+       COLLECTIONS
+    ====================================================== */
 
     productsCollection = db.collection("products");
     usersCollection = db.collection("users");
     cartsCollection = db.collection("carts");
     ordersCollection = db.collection("orders");
 
-    // ======================================
-    // VERIFY CONNECTION
-    // ======================================
+    /* ======================================================
+       VERIFY CONNECTION
+    ====================================================== */
 
     await db.command({ ping: 1 });
 
     console.log("✅ MongoDB Connected Successfully");
 
-    // ======================================
-    // CREATE INDEX IF NOT EXISTS
-    // ======================================
+    /* ======================================================
+       CREATE INDEX IF MISSING
+    ====================================================== */
 
     const createIndexIfMissing = async (
       collection,
       key,
-      options = {}
+      options = {},
     ) => {
       const indexes = await collection.indexes();
 
@@ -137,28 +204,91 @@ export const connectDB = async () => {
 
       if (!exists) {
         await collection.createIndex(key, options);
+
+        console.log(
+          `✅ Index Created: ${collection.collectionName}`,
+          key,
+        );
       }
     };
 
-    // ======================================
-    // CREATE INDEXES
-    // ======================================
+    /* ======================================================
+       CREATE INDEXES
+    ====================================================== */
 
-    await Promise.all([
-      // USERS
+    await Promise.allSettled([
+      /* ================= USERS ================= */
+
       createIndexIfMissing(
         usersCollection,
         { email: 1 },
-        { unique: true }
+        { unique: true },
       ),
 
-      // PRODUCTS
+      createIndexIfMissing(
+        usersCollection,
+        { role: 1 },
+      ),
+
+      createIndexIfMissing(
+        usersCollection,
+        { status: 1 },
+      ),
+
+      createIndexIfMissing(
+        usersCollection,
+        { createdAt: -1 },
+      ),
+
+      createIndexIfMissing(
+        usersCollection,
+        { lastLogin: -1 },
+      ),
+
+      /* ================= PRODUCTS ================= */
+
       createIndexIfMissing(
         productsCollection,
-        { category: 1 }
+        { category: 1 },
       ),
 
-      // CARTS
+      createIndexIfMissing(
+        productsCollection,
+        { brand: 1 },
+      ),
+
+      createIndexIfMissing(
+        productsCollection,
+        { price: 1 },
+      ),
+
+      createIndexIfMissing(
+        productsCollection,
+        { rating: -1 },
+      ),
+
+      createIndexIfMissing(
+        productsCollection,
+        { discount: -1 },
+      ),
+
+      createIndexIfMissing(
+        productsCollection,
+        { stock: 1 },
+      ),
+
+      createIndexIfMissing(
+        productsCollection,
+        { createdAt: -1 },
+      ),
+
+      createIndexIfMissing(
+        productsCollection,
+        { name: "text" },
+      ),
+
+      /* ================= CARTS ================= */
+
       createIndexIfMissing(
         cartsCollection,
         {
@@ -167,7 +297,7 @@ export const connectDB = async () => {
         },
         {
           unique: true,
-        }
+        },
       ),
 
       createIndexIfMissing(
@@ -175,17 +305,33 @@ export const connectDB = async () => {
         {
           email: 1,
           createdAt: -1,
-        }
+        },
       ),
 
-      // ORDERS
+      /* ================= ORDERS ================= */
+
       createIndexIfMissing(
         ordersCollection,
         {
           email: 1,
           status: 1,
           createdAt: -1,
-        }
+        },
+      ),
+
+      createIndexIfMissing(
+        ordersCollection,
+        {
+          status: 1,
+          createdAt: -1,
+        },
+      ),
+
+      createIndexIfMissing(
+        ordersCollection,
+        {
+          createdAt: -1,
+        },
       ),
     ]);
 
@@ -197,23 +343,38 @@ export const connectDB = async () => {
     throw error;
   }
 };
-
-/* ======================================
-   INITIALIZE DATABASE
-====================================== */
+/* ==========================================================
+DATABASE INITIALIZATION
+========================================================== */
 
 await connectDB();
 
-process.on("SIGINT", async () => {
+/* ==========================================================
+GRACEFUL SHUTDOWN
+========================================================== */
+
+const closeDatabase = async (signal) => {
   try {
-    console.log("🔴 Closing MongoDB Connection...");
-    await client?.close();
+    console.log(`\n${signal} received. Closing MongoDB connection...`);
+
+    if (client) {
+      await client.close();
+      console.log("✅ MongoDB connection closed.");
+    }
+
     process.exit(0);
   } catch (error) {
-    console.error(error);
+    console.error("❌ Error while closing MongoDB:", error);
     process.exit(1);
   }
-});
+};
+
+process.on("SIGINT", () => closeDatabase("SIGINT"));
+process.on("SIGTERM", () => closeDatabase("SIGTERM"));
+
+/* ==========================================================
+EXPORTS
+========================================================== */
 
 export {
   app,
@@ -227,14 +388,35 @@ export {
   jwt,
   PDFDocument,
 };
+/* ==========================================================
+HEALTH CHECK
+========================================================== */
 
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "🚀 Biscuit Shop API Running",
+    timestamp: new Date(),
+  });
+});
+
+/* ==========================================================
+API ROUTES
+========================================================== */
+
+// Authentication
 app.use("/auth", authRoutes(usersCollection));
+
+// Users
 app.use("/users", usersRoutes(usersCollection));
-app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
+
+// Cart
 app.use(
   "/carts",
   cartsRoutes(cartsCollection, productsCollection, verifyToken),
 );
+
+// Orders
 app.use(
   "/orders",
   ordersRoutes(
@@ -246,6 +428,36 @@ app.use(
     verifyAdmin,
   ),
 );
+
+// Invoice
+app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
+
+/* ==========================================================
+404 HANDLER
+========================================================== */
+
+app.use("", (req, res) => {
+  return res.status(404).json({
+    success: false,
+    message: "API Route Not Found.",
+  });
+});
+
+/* ==========================================================
+GLOBAL ERROR HANDLER
+========================================================== */
+
+app.use((err, req, res, next) => {
+  console.error("SERVER ERROR:", err);
+
+  return res.status(err.status || 500).json({
+    success: false,
+    message:
+      process.env.NODE_ENV === "production"
+        ? "Internal Server Error."
+        : err.message,
+  });
+});
 
 // ====================== PRODUCTS ======================
 app.get("/products", async (req, res) => {
