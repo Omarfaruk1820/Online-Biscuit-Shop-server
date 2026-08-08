@@ -1,30 +1,19 @@
 import jwt from "jsonwebtoken";
 
 const verifyToken = (req, res, next) => {
-  console.log("VERIFY TOKEN MIDDLEWARE");
   try {
-    let token = req.cookies?.token;
+    console.log("VERIFY TOKEN MIDDLEWARE");
 
-    if (!token) {
-      const authHeader = req.headers.authorization;
-
-      if (authHeader?.startsWith("Bearer ")) {
-        token = authHeader.split(" ")[1];
-      }
-    }
+    const token = req.cookies?.token;
 
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized access.",
+        message: "Unauthorized. Token is missing.",
       });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
-      algorithms: ["HS256"],
-      issuer: "BiscuitShop",
-      audience: "BiscuitShopClient",
-    });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     if (!decoded?.email) {
       return res.status(401).json({
@@ -33,21 +22,17 @@ const verifyToken = (req, res, next) => {
       });
     }
 
-    req.user = decoded;
+    req.user = {
+      email: decoded.email,
+    };
 
-    console.log("TOKEN VERIFIED:", decoded.email);
     next();
   } catch (error) {
-    if (error.name === "TokenExpiredError") {
-      return res.status(401).json({
-        success: false,
-        message: "Token expired.",
-      });
-    }
+    console.error("VERIFY TOKEN ERROR:", error);
 
     return res.status(403).json({
       success: false,
-      message: "Invalid token.",
+      message: "Invalid or expired token.",
     });
   }
 };

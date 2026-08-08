@@ -7,16 +7,19 @@ const verifyUser = (usersCollection) => {
 
   return async (req, res, next) => {
     try {
-      // verifyToken middleware must run first
-      if (!req.user?.email) {
+      const email = req.user?.email;
+
+      if (!email || typeof email !== "string") {
         return res.status(401).json({
           success: false,
           message: "Unauthorized access.",
         });
       }
 
+      const normalizedEmail = email.trim().toLowerCase();
+
       const user = await usersCollection.findOne({
-        email: req.user.email,
+        email: normalizedEmail,
       });
 
       if (!user) {
@@ -33,12 +36,11 @@ const verifyUser = (usersCollection) => {
         });
       }
 
-      // Store database user for next middleware
       req.dbUser = user;
 
-      next();
+      return next();
     } catch (error) {
-      console.error("verifyUser middleware error:", error);
+      console.error("VERIFY USER ERROR:", error);
 
       return res.status(500).json({
         success: false,
