@@ -3,9 +3,9 @@ import { ObjectId } from "mongodb";
 const MAX_CART_ITEMS = 100;
 
 const buildOrderItems = async (cartItems, productsCollection) => {
-  // --------------------------------------------------
-  // Validate Cart
-  // --------------------------------------------------
+  // ============================================================
+  // VALIDATE CART
+  // ============================================================
 
   if (!Array.isArray(cartItems) || cartItems.length === 0) {
     throw new Error("Cart is empty.");
@@ -15,12 +15,12 @@ const buildOrderItems = async (cartItems, productsCollection) => {
     throw new Error("Cart limit exceeded.");
   }
 
-  // --------------------------------------------------
-  // Convert & Validate Product IDs
-  // --------------------------------------------------
+  // ============================================================
+  // CONVERT PRODUCT IDS
+  // ============================================================
 
   const productIds = cartItems.map((cart) => {
-    if (!cart.productId) {
+    if (!cart?.productId) {
       throw new Error("Product ID is missing.");
     }
 
@@ -33,19 +33,21 @@ const buildOrderItems = async (cartItems, productsCollection) => {
     }
   });
 
-  // --------------------------------------------------
-  // Prevent Duplicate Products
-  // --------------------------------------------------
+  // ============================================================
+  // PREVENT DUPLICATE PRODUCTS
+  // ============================================================
 
-  const uniqueIds = new Set(productIds.map((id) => id.toString()));
+  const uniqueIds = new Set(
+    productIds.map((productId) => productId.toString()),
+  );
 
   if (uniqueIds.size !== productIds.length) {
     throw new Error("Duplicate products found in cart.");
   }
 
-  // --------------------------------------------------
-  // Load Products (Single Query)
-  // --------------------------------------------------
+  // ============================================================
+  // LOAD LATEST PRODUCTS
+  // ============================================================
 
   const products = await productsCollection
     .find(
@@ -70,19 +72,23 @@ const buildOrderItems = async (cartItems, productsCollection) => {
     )
     .toArray();
 
+  // ============================================================
+  // PRODUCT MAP
+  // ============================================================
+
   const productMap = new Map(
     products.map((product) => [product._id.toString(), product]),
   );
 
-  // --------------------------------------------------
-  // Build Order Items
-  // --------------------------------------------------
+  // ============================================================
+  // BUILD ORDER ITEMS
+  // ============================================================
 
   const items = [];
 
-  for (let i = 0; i < cartItems.length; i++) {
-    const cart = cartItems[i];
-    const productId = productIds[i];
+  for (let index = 0; index < cartItems.length; index++) {
+    const cart = cartItems[index];
+    const productId = productIds[index];
 
     const product = productMap.get(productId.toString());
 
@@ -90,62 +96,86 @@ const buildOrderItems = async (cartItems, productsCollection) => {
       throw new Error("One or more products no longer exist.");
     }
 
-    // Quantity
+    // ==========================================================
+    // PRODUCT NAME
+    // ==========================================================
+
+    const productName =
+      typeof product.name === "string" && product.name.trim()
+        ? product.name.trim()
+        : "Unknown Product";
+
+    // ==========================================================
+    // QUANTITY
+    // ==========================================================
 
     const quantity = Number(cart.quantity);
 
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) {
-      throw new Error(`Invalid quantity for "${product.name}".`);
+      throw new Error(`Invalid quantity for "${productName}".`);
     }
 
-    // Price
+    // ==========================================================
+    // PRICE
+    // ==========================================================
 
     const price = Number(product.price);
 
     if (!Number.isFinite(price) || price < 0) {
-      throw new Error(`Invalid price for "${product.name}".`);
+      throw new Error(`Invalid price for "${productName}".`);
     }
 
-    // Discount
+    // ==========================================================
+    // DISCOUNT
+    // ==========================================================
 
     const discount = Math.max(0, Math.min(Number(product.discount) || 0, 100));
 
-    // Stock
+    // ==========================================================
+    // STOCK
+    // ==========================================================
 
     const stock = Number(product.stock);
 
     if (!Number.isFinite(stock) || stock < 0) {
-      throw new Error(`Invalid stock for "${product.name}".`);
+      throw new Error(`Invalid stock for "${productName}".`);
     }
 
-    if (stock === 0) {
-      throw new Error(`"${product.name}" is currently out of stock.`);
+    if (stock <= 0) {
+      throw new Error(`"${productName}" is currently out of stock.`);
     }
 
     if (quantity > stock) {
-      throw new Error(`Only ${stock} item(s) available for "${product.name}".`);
+      throw new Error(`Only ${stock} item(s) available for "${productName}".`);
     }
 
-    // Price Calculation
+    // ==========================================================
+    // PRICE CALCULATION
+    // ==========================================================
 
     const finalPrice = Number((price - (price * discount) / 100).toFixed(2));
 
     const subtotal = Number((finalPrice * quantity).toFixed(2));
 
-    // Snapshot
+    // ==========================================================
+    // ORDER SNAPSHOT
+    // ==========================================================
 
     items.push({
       productId,
 
-      sku: product.sku ?? "",
+      sku: typeof product.sku === "string" ? product.sku.trim() : "",
 
-      name: String(product.name).trim(),
+      name: productName,
 
       image: typeof product.image === "string" ? product.image.trim() : "",
 
-      brand: product.brand ?? "",
+      brand: typeof product.brand === "string" ? product.brand.trim() : "",
 
-      category: product.category ?? "",
+      category:
+        typeof product.category === "string"
+          ? product.category.trim().toLowerCase()
+          : "",
 
       weight: product.weight ?? null,
 

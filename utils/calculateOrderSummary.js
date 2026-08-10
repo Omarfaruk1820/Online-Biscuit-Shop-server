@@ -1,21 +1,31 @@
 /**
- * --------------------------------------------------------
+ * ============================================================
  * Calculate Order Summary
- * --------------------------------------------------------
- * Calculates subtotal, discount, shipping, tax and grand total.
+ * ============================================================
  *
- * @param {Array} items
- * @returns {Object}
- * --------------------------------------------------------
+ * Calculates:
+ * - totalItems
+ * - totalQuantity
+ * - subtotal
+ * - totalDiscount
+ * - shipping
+ * - tax
+ * - grandTotal
  */
 
 const FREE_SHIPPING_THRESHOLD = 1000;
 const SHIPPING_CHARGE = 60;
 const TAX_RATE = 0;
 
-const round = (value) => Number((Number(value) || 0).toFixed(2));
+const round = (value) => {
+  return Number((Number(value) || 0).toFixed(2));
+};
 
 const calculateOrderSummary = (items = []) => {
+  // ============================================================
+  // EMPTY ORDER
+  // ============================================================
+
   if (!Array.isArray(items) || items.length === 0) {
     return {
       totalItems: 0,
@@ -28,13 +38,25 @@ const calculateOrderSummary = (items = []) => {
     };
   }
 
+  // ============================================================
+  // TOTALS
+  // ============================================================
+
   let totalItems = 0;
   let totalQuantity = 0;
   let subtotal = 0;
   let totalDiscount = 0;
 
+  // ============================================================
+  // CALCULATE ITEMS
+  // ============================================================
+
   for (const item of items) {
-    const quantity = Math.max(1, Number(item?.quantity) || 1);
+    const quantity = Number(item?.quantity);
+
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      continue;
+    }
 
     const price = Math.max(0, Number(item?.price) || 0);
 
@@ -46,18 +68,38 @@ const calculateOrderSummary = (items = []) => {
 
     subtotal += finalPrice * quantity;
 
-    totalDiscount += (price - finalPrice) * quantity;
+    totalDiscount += Math.max(0, price - finalPrice) * quantity;
   }
+
+  // ============================================================
+  // ROUND VALUES
+  // ============================================================
 
   subtotal = round(subtotal);
 
   totalDiscount = round(totalDiscount);
 
+  // ============================================================
+  // SHIPPING
+  // ============================================================
+
   const shipping = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_CHARGE;
+
+  // ============================================================
+  // TAX
+  // ============================================================
 
   const tax = round((subtotal * TAX_RATE) / 100);
 
+  // ============================================================
+  // GRAND TOTAL
+  // ============================================================
+
   const grandTotal = round(subtotal + shipping + tax);
+
+  // ============================================================
+  // RETURN
+  // ============================================================
 
   return {
     totalItems,
