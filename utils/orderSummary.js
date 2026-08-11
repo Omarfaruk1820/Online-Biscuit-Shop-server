@@ -1,18 +1,3 @@
-/**
- * ============================================================
- * Calculate Order Summary
- * ============================================================
- *
- * Calculates:
- * - totalItems
- * - totalQuantity
- * - subtotal
- * - totalDiscount
- * - shipping
- * - tax
- * - grandTotal
- */
-
 const FREE_SHIPPING_THRESHOLD = 1000;
 const SHIPPING_CHARGE = 60;
 const TAX_RATE = 0;
@@ -63,7 +48,6 @@ const calculateOrderSummary = (items = []) => {
     const finalPrice = Math.max(0, Number(item?.finalPrice) || price);
 
     totalItems += 1;
-
     totalQuantity += quantity;
 
     subtotal += finalPrice * quantity;
@@ -76,7 +60,6 @@ const calculateOrderSummary = (items = []) => {
   // ============================================================
 
   subtotal = round(subtotal);
-
   totalDiscount = round(totalDiscount);
 
   // ============================================================

@@ -10,6 +10,14 @@ const authRoutes = (usersCollection) => {
   const router = Router();
 
   // ======================================================
+  // HELPER
+  // ======================================================
+
+  const normalizeEmail = (email = "") => {
+    return typeof email === "string" ? email.trim().toLowerCase() : "";
+  };
+
+  // ======================================================
   // POST /auth/jwt
   // Create Application JWT
   // ======================================================
@@ -17,13 +25,10 @@ const authRoutes = (usersCollection) => {
   router.post("/jwt", async (req, res) => {
     try {
       // --------------------------------------------------
-      // Validate Request
+      // VALIDATE EMAIL
       // --------------------------------------------------
 
-      const email =
-        typeof req.body?.email === "string"
-          ? req.body.email.trim().toLowerCase()
-          : "";
+      const email = normalizeEmail(req.body?.email);
 
       if (!email) {
         return res.status(400).json({
@@ -33,7 +38,7 @@ const authRoutes = (usersCollection) => {
       }
 
       // --------------------------------------------------
-      // Find User
+      // FIND USER
       // --------------------------------------------------
 
       const user = await usersCollection.findOne(
@@ -58,7 +63,7 @@ const authRoutes = (usersCollection) => {
       );
 
       // --------------------------------------------------
-      // User Not Found
+      // USER NOT FOUND
       // --------------------------------------------------
 
       if (!user) {
@@ -69,7 +74,7 @@ const authRoutes = (usersCollection) => {
       }
 
       // --------------------------------------------------
-      // Account Status
+      // ACCOUNT STATUS
       // --------------------------------------------------
 
       if (user.status === "blocked") {
@@ -80,7 +85,7 @@ const authRoutes = (usersCollection) => {
       }
 
       // --------------------------------------------------
-      // Create JWT
+      // CREATE APPLICATION JWT
       // --------------------------------------------------
 
       const token = createToken({
@@ -95,18 +100,18 @@ const authRoutes = (usersCollection) => {
       }
 
       // --------------------------------------------------
-      // Set Secure Cookie
+      // SET HTTP-ONLY COOKIE
       // --------------------------------------------------
 
       res.cookie("token", token, cookieOptions);
 
       // --------------------------------------------------
-      // Response
+      // RESPONSE
       // --------------------------------------------------
 
       return res.status(200).json({
         success: true,
-        message: "Login successful.",
+        message: "Authentication successful.",
 
         user: {
           _id: user._id,
@@ -116,10 +121,11 @@ const authRoutes = (usersCollection) => {
           role: user.role || "user",
           provider: user.provider || "password",
           status: user.status || "active",
+          emailVerified: Boolean(user.emailVerified),
         },
       });
     } catch (error) {
-      console.error("POST /auth/jwt ERROR:", error);
+      console.error("POST /auth/jwt ERROR:", error?.message || error);
 
       return res.status(500).json({
         success: false,
@@ -145,7 +151,7 @@ const authRoutes = (usersCollection) => {
         message: "Logout successful.",
       });
     } catch (error) {
-      console.error("POST /auth/logout ERROR:", error);
+      console.error("POST /auth/logout ERROR:", error?.message || error);
 
       return res.status(500).json({
         success: false,
@@ -168,7 +174,7 @@ const authRoutes = (usersCollection) => {
         const user = req.dbUser;
 
         // ------------------------------------------------
-        // Safety Check
+        // USER NOT FOUND
         // ------------------------------------------------
 
         if (!user) {
@@ -179,7 +185,7 @@ const authRoutes = (usersCollection) => {
         }
 
         // ------------------------------------------------
-        // Blocked Account Check
+        // BLOCKED ACCOUNT
         // ------------------------------------------------
 
         if (user.status === "blocked") {
@@ -190,7 +196,7 @@ const authRoutes = (usersCollection) => {
         }
 
         // ------------------------------------------------
-        // Response
+        // RESPONSE
         // ------------------------------------------------
 
         return res.status(200).json({
@@ -198,20 +204,30 @@ const authRoutes = (usersCollection) => {
 
           user: {
             _id: user._id,
+
             name: user.name || "",
+
             email: user.email,
+
             photo: user.photo || "",
+
             role: user.role || "user",
+
             provider: user.provider || "password",
+
             status: user.status || "active",
+
             emailVerified: Boolean(user.emailVerified),
+
             createdAt: user.createdAt || null,
+
             updatedAt: user.updatedAt || null,
+
             lastLogin: user.lastLogin || null,
           },
         });
       } catch (error) {
-        console.error("GET /auth/me ERROR:", error);
+        console.error("GET /auth/me ERROR:", error?.message || error);
 
         return res.status(500).json({
           success: false,

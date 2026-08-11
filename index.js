@@ -35,8 +35,10 @@ const app = express();
 app.disable("x-powered-by");
 
 // ============================================================
-// ENVIRONMENT VARIABLES
+// ENVIRONMENT
 // ============================================================
+
+const NODE_ENV = process.env.NODE_ENV?.trim() || "development";
 
 const requiredEnv = [
   "DB_USERNAME",
@@ -48,14 +50,10 @@ const requiredEnv = [
 ];
 
 for (const key of requiredEnv) {
-  if (!process.env[key]?.trim()) {
+  if (typeof process.env[key] !== "string" || !process.env[key].trim()) {
     throw new Error(`Missing required environment variable: ${key}`);
   }
 }
-
-// ============================================================
-// ENV VALUES
-// ============================================================
 
 const DB_USERNAME = process.env.DB_USERNAME.trim();
 const DB_PASS = process.env.DB_PASS;
@@ -64,23 +62,17 @@ const DB_NAME = process.env.DB_NAME.trim();
 const CLIENT_URL = process.env.CLIENT_URL.trim();
 const CLIENT_URL_PROD = process.env.CLIENT_URL_PROD.trim();
 
-const NODE_ENV = process.env.NODE_ENV?.trim() || "development";
-
-// ============================================================
-// ALLOWED CORS ORIGINS
-// ============================================================
-
-const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD].filter(Boolean);
-
 // ============================================================
 // CORS
 // ============================================================
 
+const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD].filter(Boolean);
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests without Origin.
-      // Useful for server-to-server requests, health checks, etc.
+      // Allow requests without an Origin header.
+      // Examples: server-to-server requests, health checks, etc.
       if (!origin) {
         return callback(null, true);
       }
@@ -89,7 +81,7 @@ app.use(
         return callback(null, true);
       }
 
-      console.error("CORS BLOCKED:", origin);
+      console.error(`CORS blocked origin: ${origin}`);
 
       const error = new Error("Not allowed by CORS");
       error.status = 403;
@@ -99,7 +91,7 @@ app.use(
 
     credentials: true,
 
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
 
     allowedHeaders: ["Content-Type", "Authorization"],
 
@@ -124,17 +116,17 @@ app.use(
 app.use(cookieParser());
 
 // ============================================================
-// MONGODB
+// MONGODB URI
 // ============================================================
 
-const uri = `mongodb+srv://${encodeURIComponent(
-  DB_USERNAME,
-)}:${encodeURIComponent(
-  DB_PASS,
-)}@cluster0.g29mryf.mongodb.net/?retryWrites=true&w=majority`;
+const uri =
+  `mongodb+srv://${encodeURIComponent(DB_USERNAME)}` +
+  `:${encodeURIComponent(DB_PASS)}` +
+  `@cluster0.g29mryf.mongodb.net/` +
+  `?retryWrites=true&w=majority`;
 
 // ============================================================
-// MONGODB CLIENT
+// MONGODB CLIENT OPTIONS
 // ============================================================
 
 const mongoOptions = {
@@ -149,6 +141,10 @@ const mongoOptions = {
   },
 };
 
+// ============================================================
+// DATABASE STATE
+// ============================================================
+
 let client = null;
 let db = null;
 
@@ -157,11 +153,17 @@ let usersCollection = null;
 let cartsCollection = null;
 let ordersCollection = null;
 
+let isConnecting = false;
+
 // ============================================================
 // CREATE INDEX IF MISSING
 // ============================================================
 
 const createIndexIfMissing = async (collection, key, options = {}) => {
+  if (!collection) {
+    throw new Error("Collection is required for index creation.");
+  }
+
   try {
     const indexes = await collection.indexes();
 
@@ -175,12 +177,14 @@ const createIndexIfMissing = async (collection, key, options = {}) => {
 
     await collection.createIndex(key, options);
 
-    console.log(`Index created: ${collection.collectionName}`, key);
+    console.log(`MongoDB index created: ${collection.collectionName}`, key);
   } catch (error) {
     console.error(
-      `Index creation failed: ${collection.collectionName}`,
+      `MongoDB index creation failed: ${collection.collectionName}`,
       error?.message || error,
     );
+
+    throw error;
   }
 };
 
@@ -189,6 +193,15 @@ const createIndexIfMissing = async (collection, key, options = {}) => {
 // ============================================================
 
 const createDatabaseIndexes = async () => {
+  if (
+    !usersCollection ||
+    !productsCollection ||
+    !cartsCollection ||
+    !ordersCollection
+  ) {
+    throw new Error("Database collections are not initialized.");
+  }
+
   await Promise.all([
     // ========================================================
     // USERS
@@ -273,7 +286,7 @@ const createDatabaseIndexes = async () => {
     ),
   ]);
 
-  console.log("Database indexes ready.");
+  console.log("MongoDB database indexes are ready.");
 };
 
 // ============================================================
@@ -281,21 +294,43 @@ const createDatabaseIndexes = async () => {
 // ============================================================
 
 export const connectDB = async () => {
-  try {
-    // Reuse existing connection.
+  // Already connected.
+  if (db) {
+    return db;
+  }
+
+  // Prevent duplicate connection attempts.
+  if (isConnecting) {
+    while (isConnecting) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
     if (db) {
       return db;
     }
+  }
 
-    // Create MongoClient only once.
+  isConnecting = true;
+
+  try {
+    // ========================================================
+    // CREATE CLIENT
+    // ========================================================
+
     if (!client) {
       client = new MongoClient(uri, mongoOptions);
     }
 
-    // Connect.
+    // ========================================================
+    // CONNECT
+    // ========================================================
+
     await client.connect();
 
-    // Select database.
+    // ========================================================
+    // SELECT DATABASE
+    // ========================================================
+
     db = client.db(DB_NAME);
 
     // ========================================================
@@ -303,11 +338,8 @@ export const connectDB = async () => {
     // ========================================================
 
     productsCollection = db.collection("products");
-
     usersCollection = db.collection("users");
-
     cartsCollection = db.collection("carts");
-
     ordersCollection = db.collection("orders");
 
     // ========================================================
@@ -318,23 +350,36 @@ export const connectDB = async () => {
       ping: 1,
     });
 
-    console.log("MongoDB Connected Successfully.");
+    console.log("MongoDB connected successfully.");
 
     // ========================================================
-    // INDEXES
+    // DATABASE INDEXES
     // ========================================================
 
     await createDatabaseIndexes();
 
     return db;
   } catch (error) {
-    console.error("MongoDB Connection Error:", error);
+    console.error("MongoDB connection error:", error?.message || error);
 
-    // Reset state so a later connection attempt
-    // can retry correctly.
     db = null;
 
+    if (client) {
+      try {
+        await client.close();
+      } catch (closeError) {
+        console.error(
+          "MongoDB cleanup error:",
+          closeError?.message || closeError,
+        );
+      }
+    }
+
+    client = null;
+
     throw error;
+  } finally {
+    isConnecting = false;
   }
 };
 
@@ -431,7 +476,7 @@ app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
 app.use((req, res) => {
   return res.status(404).json({
     success: false,
-    message: "API Route Not Found.",
+    message: "API route not found.",
     path: req.originalUrl,
   });
 });
@@ -441,19 +486,26 @@ app.use((req, res) => {
 // ============================================================
 
 app.use((err, req, res, next) => {
-  console.error("SERVER ERROR:", err);
+  console.error("GLOBAL SERVER ERROR:", err?.stack || err);
 
   const statusCode =
     Number.isInteger(err?.status) && err.status >= 400 && err.status < 600
       ? err.status
       : 500;
 
-  const message =
-    NODE_ENV === "production"
-      ? statusCode === 403
-        ? "Forbidden."
-        : "Internal Server Error."
-      : err?.message || "Internal Server Error.";
+  let message = "Internal Server Error.";
+
+  if (NODE_ENV !== "production") {
+    message = err?.message || "Internal Server Error.";
+  } else if (statusCode === 403) {
+    message = "Forbidden.";
+  } else if (statusCode === 400) {
+    message = "Bad Request.";
+  } else if (statusCode === 401) {
+    message = "Unauthorized.";
+  } else if (statusCode === 404) {
+    message = "Not Found.";
+  }
 
   return res.status(statusCode).json({
     success: false,
@@ -462,25 +514,30 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// GRACEFUL SHUTDOWN
+// GRACEFUL DATABASE SHUTDOWN
 // ============================================================
 
 const closeDatabase = async (signal) => {
-  try {
-    console.log(`${signal} received. Closing MongoDB connection...`);
+  console.log(`${signal} received. Closing MongoDB connection...`);
 
+  try {
     if (client) {
       await client.close();
 
       client = null;
       db = null;
 
-      console.log("MongoDB connection closed.");
+      productsCollection = null;
+      usersCollection = null;
+      cartsCollection = null;
+      ordersCollection = null;
+
+      console.log("MongoDB connection closed successfully.");
     }
 
     process.exit(0);
   } catch (error) {
-    console.error("Error while closing MongoDB:", error);
+    console.error("Error while closing MongoDB:", error?.message || error);
 
     process.exit(1);
   }
@@ -490,9 +547,13 @@ const closeDatabase = async (signal) => {
 // PROCESS SIGNALS
 // ============================================================
 
-process.once("SIGINT", () => closeDatabase("SIGINT"));
+process.once("SIGINT", () => {
+  void closeDatabase("SIGINT");
+});
 
-process.once("SIGTERM", () => closeDatabase("SIGTERM"));
+process.once("SIGTERM", () => {
+  void closeDatabase("SIGTERM");
+});
 
 // ============================================================
 // EXPORTS

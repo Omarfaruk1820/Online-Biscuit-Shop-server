@@ -4,7 +4,11 @@ const calculateOrderTotal = (items = []) => {
   }
 
   const total = items.reduce((sum, item) => {
-    const subtotal = Number(item?.subtotal) || 0;
+    const subtotal = Number(item?.subtotal);
+
+    if (!Number.isFinite(subtotal) || subtotal < 0) {
+      return sum;
+    }
 
     return sum + subtotal;
   }, 0);

@@ -7,20 +7,36 @@ const verifyUser = (usersCollection) => {
 
   return async (req, res, next) => {
     try {
+      // ======================================================
+      // GET AUTHENTICATED EMAIL
+      // ======================================================
+
       const email = req.user?.email;
 
-      if (!email || typeof email !== "string") {
+      if (typeof email !== "string" || !email.trim()) {
         return res.status(401).json({
           success: false,
           message: "Unauthorized access.",
         });
       }
 
+      // ======================================================
+      // NORMALIZE EMAIL
+      // ======================================================
+
       const normalizedEmail = email.trim().toLowerCase();
+
+      // ======================================================
+      // FIND USER
+      // ======================================================
 
       const user = await usersCollection.findOne({
         email: normalizedEmail,
       });
+
+      // ======================================================
+      // USER NOT FOUND
+      // ======================================================
 
       if (!user) {
         return res.status(404).json({
@@ -29,6 +45,10 @@ const verifyUser = (usersCollection) => {
         });
       }
 
+      // ======================================================
+      // ACCOUNT STATUS
+      // ======================================================
+
       if (user.status === "blocked") {
         return res.status(403).json({
           success: false,
@@ -36,11 +56,19 @@ const verifyUser = (usersCollection) => {
         });
       }
 
+      // ======================================================
+      // NORMALIZE APPLICATION USER
+      // ======================================================
+
       req.dbUser = user;
+
+      // ======================================================
+      // CONTINUE
+      // ======================================================
 
       return next();
     } catch (error) {
-      console.error("VERIFY USER ERROR:", error);
+      console.error("VERIFY USER ERROR:", error?.message || error);
 
       return res.status(500).json({
         success: false,

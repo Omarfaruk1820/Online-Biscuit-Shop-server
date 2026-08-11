@@ -2,37 +2,47 @@ import jwt from "jsonwebtoken";
 
 const verifyToken = (req, res, next) => {
   try {
-    console.log("VERIFY TOKEN MIDDLEWARE");
-
     const token = req.cookies?.token;
 
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized. Token is missing.",
+        message: "Unauthorized. Authentication token is missing.",
       });
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    if (!decoded?.email) {
+    const email =
+      typeof decoded?.email === "string"
+        ? decoded.email.trim().toLowerCase()
+        : "";
+
+    if (!email) {
       return res.status(401).json({
         success: false,
-        message: "Invalid token.",
+        message: "Unauthorized. Invalid authentication token.",
       });
     }
 
     req.user = {
-      email: decoded.email,
+      email,
     };
 
-    next();
+    return next();
   } catch (error) {
-    console.error("VERIFY TOKEN ERROR:", error);
+    console.error("VERIFY TOKEN ERROR:", error?.message || error);
 
-    return res.status(403).json({
+    if (error?.name === "TokenExpiredError") {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication token has expired.",
+      });
+    }
+
+    return res.status(401).json({
       success: false,
-      message: "Invalid or expired token.",
+      message: "Invalid authentication token.",
     });
   }
 };
