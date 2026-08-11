@@ -77,11 +77,10 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
   // =========================================================
   // GET /carts
   // Get Current User Cart
-  // =========================================================
   router.get("/", verifyToken, async (req, res) => {
     try {
       // ============================================================
-      // AUTHORIZATION
+      // AUTHENTICATED USER EMAIL
       // ============================================================
 
       const email = normalizeEmail(req.user?.email);
@@ -112,10 +111,30 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         .toArray();
 
       // ============================================================
-      // CALCULATE SUMMARY
+      // CALCULATE CART SUMMARY
       // ============================================================
 
       const summary = calculateSummary(cart);
+
+      // ============================================================
+      // SAFE SUMMARY
+      // ============================================================
+
+      const safeSummary = {
+        totalItems: Number(summary?.totalItems) || 0,
+
+        totalQuantity: Number(summary?.totalQuantity) || 0,
+
+        subtotal: Number(summary?.subtotal) || 0,
+
+        discount: Number(summary?.discount) || 0,
+
+        shipping: Number(summary?.shipping) || 0,
+
+        tax: Number(summary?.tax) || 0,
+
+        grandTotal: Number(summary?.grandTotal) || 0,
+      };
 
       // ============================================================
       // SUCCESS
@@ -128,24 +147,14 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
         data: cart,
 
-        summary: {
-          totalItems: Number(summary?.totalItems) || 0,
-
-          totalQuantity: Number(summary?.totalQuantity) || 0,
-
-          subtotal: Number(summary?.subtotal) || 0,
-
-          discount: Number(summary?.discount) || 0,
-
-          shipping: Number(summary?.shipping) || 0,
-
-          tax: Number(summary?.tax) || 0,
-
-          grandTotal: Number(summary?.grandTotal) || 0,
-        },
+        summary: safeSummary,
       });
     } catch (error) {
-      console.error("GET /carts ERROR:", error);
+      // ============================================================
+      // SERVER ERROR
+      // ============================================================
+
+      console.error("GET /carts ERROR:", error?.message || error);
 
       return res.status(500).json({
         success: false,
