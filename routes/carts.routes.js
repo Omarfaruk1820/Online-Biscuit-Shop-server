@@ -112,27 +112,6 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         .toArray();
 
       // ============================================================
-      // EMPTY CART
-      // ============================================================
-
-      if (cart.length === 0) {
-        return res.status(200).json({
-          success: true,
-          count: 0,
-          data: [],
-          summary: {
-            totalItems: 0,
-            totalQuantity: 0,
-            subtotal: 0,
-            discount: 0,
-            shipping: 0,
-            tax: 0,
-            grandTotal: 0,
-          },
-        });
-      }
-
-      // ============================================================
       // CALCULATE SUMMARY
       // ============================================================
 
@@ -144,9 +123,26 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
       return res.status(200).json({
         success: true,
+
         count: cart.length,
+
         data: cart,
-        summary,
+
+        summary: {
+          totalItems: Number(summary?.totalItems) || 0,
+
+          totalQuantity: Number(summary?.totalQuantity) || 0,
+
+          subtotal: Number(summary?.subtotal) || 0,
+
+          discount: Number(summary?.discount) || 0,
+
+          shipping: Number(summary?.shipping) || 0,
+
+          tax: Number(summary?.tax) || 0,
+
+          grandTotal: Number(summary?.grandTotal) || 0,
+        },
       });
     } catch (error) {
       console.error("GET /carts ERROR:", error);
@@ -244,7 +240,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
       const productObjectId = new ObjectId(productId);
 
       // ============================================================
-      // FETCH LATEST PRODUCT
+      // GET LATEST PRODUCT
       // ============================================================
 
       const product = await productsCollection.findOne(
@@ -274,7 +270,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
       }
 
       // ============================================================
-      // PRODUCT DATA
+      // PRODUCT INFORMATION
       // ============================================================
 
       const productName =
@@ -299,7 +295,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         typeof product.sku === "string" ? product.sku.trim() : "";
 
       // ============================================================
-      // PRICE VALIDATION
+      // PRICE
       // ============================================================
 
       const price = Number(product.price);
@@ -312,7 +308,20 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
       }
 
       // ============================================================
-      // STOCK VALIDATION
+      // DISCOUNT
+      // ============================================================
+
+      const discount = Number(product.discount ?? 0);
+
+      if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid discount for "${productName}".`,
+        });
+      }
+
+      // ============================================================
+      // STOCK
       // ============================================================
 
       const stock = Number(product.stock);
@@ -339,13 +348,12 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
       }
 
       // ============================================================
-      // CALCULATE CURRENT PRICE
+      // CALCULATE FINAL PRICE
       // ============================================================
 
-      const { discount, finalPrice, subtotal } = calculateItemValues(
-        product,
-        qty,
-      );
+      const finalPrice = Number((price - (price * discount) / 100).toFixed(2));
+
+      const subtotal = Number((finalPrice * qty).toFixed(2));
 
       // ============================================================
       // CHECK EXISTING CART ITEM
@@ -365,7 +373,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
       );
 
       // ============================================================
-      // UPDATE EXISTING CART ITEM
+      // EXISTING ITEM
       // ============================================================
 
       if (existingItem) {
@@ -380,6 +388,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
         const newQuantity = existingQuantity + qty;
 
+        // Maximum cart quantity
         if (newQuantity > 99) {
           return res.status(400).json({
             success: false,
@@ -387,6 +396,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
           });
         }
 
+        // Stock validation
         if (newQuantity > stock) {
           return res.status(400).json({
             success: false,
@@ -462,6 +472,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
       const cartItem = {
         email,
+
         productId: productObjectId,
 
         sku: productSku,
@@ -515,8 +526,6 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     } catch (error) {
       // ============================================================
       // DUPLICATE CART ITEM
-      // Requires unique index:
-      // { email: 1, productId: 1 }
       // ============================================================
 
       if (error?.code === 11000) {
