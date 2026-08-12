@@ -3,9 +3,10 @@ import "./config/env.js";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import firebaseAdmin from "./utils/firebaseAdmin.js";
 
 import { MongoClient, ServerApiVersion } from "mongodb";
+
+import "./utils/firebaseAdmin.js";
 
 import authRoutes from "./routes/auth.routes.js";
 import usersRoutes from "./routes/users.routes.js";
@@ -19,11 +20,27 @@ import verifyToken from "./middleware/verifyToken.js";
 import verifyUser from "./middleware/verifyUser.js";
 import verifyAdmin from "./middleware/verifyAdmin.js";
 
+// ============================================================
+// APP
+// ============================================================
+
 const app = express();
 
 app.disable("x-powered-by");
 
-const NODE_ENV = process.env.NODE_ENV?.trim() || "development";
+// ============================================================
+// ENVIRONMENT
+// ============================================================
+
+const NODE_ENV = String(process.env.NODE_ENV || "development")
+  .trim()
+  .toLowerCase();
+
+const isProduction = NODE_ENV === "production";
+
+// ============================================================
+// REQUIRED ENVIRONMENT VARIABLES
+// ============================================================
 
 const requiredEnv = [
   "DB_USERNAME",
@@ -35,10 +52,16 @@ const requiredEnv = [
 ];
 
 for (const key of requiredEnv) {
-  if (typeof process.env[key] !== "string" || !process.env[key].trim()) {
+  const value = process.env[key];
+
+  if (typeof value !== "string" || !value.trim()) {
     throw new Error(`Missing required environment variable: ${key}`);
   }
 }
+
+// ============================================================
+// ENV VALUES
+// ============================================================
 
 const DB_USERNAME = process.env.DB_USERNAME.trim();
 const DB_PASS = process.env.DB_PASS;
@@ -47,28 +70,56 @@ const DB_NAME = process.env.DB_NAME.trim();
 const CLIENT_URL = process.env.CLIENT_URL.trim();
 const CLIENT_URL_PROD = process.env.CLIENT_URL_PROD.trim();
 
-const allowedOrigins = [
-  process.env.CLIENT_URL,
-  process.env.CLIENT_URL_PROD,
-].filter(Boolean);
+// ============================================================
+// ALLOWED CORS ORIGINS
+// ============================================================
+
+const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD, "http://localhost:5173"]
+  .map((origin) => origin.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+
+console.log("Allowed CORS origins:", allowedOrigins);
+
+// ============================================================
+// CORS
+// ============================================================
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Postman/server-to-server requests
+      // Requests without Origin:
+      // Postman, server-to-server, health checks, etc.
       if (!origin) {
         return callback(null, true);
       }
 
-      if (allowedOrigins.includes(origin)) {
+      const normalizedOrigin = origin.trim().replace(/\/$/, "");
+
+      if (allowedOrigins.includes(normalizedOrigin)) {
         return callback(null, true);
       }
 
-      return callback(new Error(`CORS blocked for origin: ${origin}`), false);
+      console.warn("CORS blocked:", origin);
+
+      // IMPORTANT:
+      // Do not throw an Error here.
+      // Return false so cors middleware handles it cleanly.
+      return callback(null, false);
     },
+
     credentials: true,
+
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+
+    optionsSuccessStatus: 204,
   }),
 );
+
+// ============================================================
+// BODY PARSERS
+// ============================================================
 
 app.use(
   express.json({
@@ -78,16 +129,30 @@ app.use(
 
 app.use(cookieParser());
 
-const uri =
+// ============================================================
+// MONGODB
+// ============================================================
+
+const MONGO_URI =
   `mongodb+srv://${encodeURIComponent(DB_USERNAME)}` +
   `:${encodeURIComponent(DB_PASS)}` +
   `@cluster0.g29mryf.mongodb.net/` +
   `?retryWrites=true&w=majority`;
 
+// ============================================================
+// MONGODB OPTIONS
+// ============================================================
+
 const mongoOptions = {
-  maxPoolSize: 20,
-  minPoolSize: 5,
+  maxPoolSize: 10,
+  minPoolSize: 0,
   maxIdleTimeMS: 30000,
+
+  serverSelectionTimeoutMS: 10000,
+
+  connectTimeoutMS: 10000,
+
+  socketTimeoutMS: 45000,
 
   serverApi: {
     version: ServerApiVersion.v1,
@@ -95,6 +160,10 @@ const mongoOptions = {
     deprecationErrors: true,
   },
 };
+
+// ============================================================
+// MONGODB STATE
+// ============================================================
 
 let client = null;
 let db = null;
@@ -104,7 +173,11 @@ let usersCollection = null;
 let cartsCollection = null;
 let ordersCollection = null;
 
-let isConnecting = false;
+let connectionPromise = null;
+
+// ============================================================
+// DATABASE INDEX HELPER
+// ============================================================
 
 const createIndexIfMissing = async (collection, key, options = {}) => {
   if (!collection) {
@@ -112,7 +185,7 @@ const createIndexIfMissing = async (collection, key, options = {}) => {
   }
 
   try {
-    const indexes = await collection.indexes();
+    const indexes = await collection.listIndexes().toArray();
 
     const exists = indexes.some(
       (index) => JSON.stringify(index.key) === JSON.stringify(key),
@@ -135,6 +208,10 @@ const createIndexIfMissing = async (collection, key, options = {}) => {
   }
 };
 
+// ============================================================
+// DATABASE INDEXES
+// ============================================================
+
 const createDatabaseIndexes = async () => {
   if (
     !usersCollection ||
@@ -146,30 +223,55 @@ const createDatabaseIndexes = async () => {
   }
 
   await Promise.all([
+    // USERS
     createIndexIfMissing(usersCollection, { email: 1 }, { unique: true }),
 
-    createIndexIfMissing(usersCollection, { role: 1 }),
+    createIndexIfMissing(usersCollection, {
+      role: 1,
+    }),
 
-    createIndexIfMissing(usersCollection, { status: 1 }),
+    createIndexIfMissing(usersCollection, {
+      status: 1,
+    }),
 
-    createIndexIfMissing(usersCollection, { createdAt: -1 }),
+    createIndexIfMissing(usersCollection, {
+      createdAt: -1,
+    }),
 
-    createIndexIfMissing(usersCollection, { lastLogin: -1 }),
+    createIndexIfMissing(usersCollection, {
+      lastLogin: -1,
+    }),
 
-    createIndexIfMissing(productsCollection, { category: 1 }),
+    // PRODUCTS
+    createIndexIfMissing(productsCollection, {
+      category: 1,
+    }),
 
-    createIndexIfMissing(productsCollection, { brand: 1 }),
+    createIndexIfMissing(productsCollection, {
+      brand: 1,
+    }),
 
-    createIndexIfMissing(productsCollection, { price: 1 }),
+    createIndexIfMissing(productsCollection, {
+      price: 1,
+    }),
 
-    createIndexIfMissing(productsCollection, { rating: -1 }),
+    createIndexIfMissing(productsCollection, {
+      rating: -1,
+    }),
 
-    createIndexIfMissing(productsCollection, { discount: -1 }),
+    createIndexIfMissing(productsCollection, {
+      discount: -1,
+    }),
 
-    createIndexIfMissing(productsCollection, { stock: 1 }),
+    createIndexIfMissing(productsCollection, {
+      stock: 1,
+    }),
 
-    createIndexIfMissing(productsCollection, { createdAt: -1 }),
+    createIndexIfMissing(productsCollection, {
+      createdAt: -1,
+    }),
 
+    // CARTS
     createIndexIfMissing(
       cartsCollection,
       {
@@ -186,6 +288,7 @@ const createDatabaseIndexes = async () => {
       createdAt: -1,
     }),
 
+    // ORDERS
     createIndexIfMissing(ordersCollection, {
       email: 1,
       status: 1,
@@ -216,73 +319,92 @@ const createDatabaseIndexes = async () => {
   console.log("MongoDB database indexes are ready.");
 };
 
+// ============================================================
+// CONNECT DATABASE
+// ============================================================
+
 export const connectDB = async () => {
-  // Already connected.
+  // Already connected
   if (db) {
     return db;
   }
 
-  // Prevent duplicate connection attempts.
-  if (isConnecting) {
-    while (isConnecting) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-
-    if (db) {
-      return db;
-    }
+  // Connection already in progress
+  if (connectionPromise) {
+    return connectionPromise;
   }
 
-  isConnecting = true;
-
-  try {
-    if (!client) {
-      client = new MongoClient(uri, mongoOptions);
-    }
-
-    await client.connect();
-
-    db = client.db(DB_NAME);
-
-    productsCollection = db.collection("products");
-    usersCollection = db.collection("users");
-    cartsCollection = db.collection("carts");
-    ordersCollection = db.collection("orders");
-
-    await db.command({
-      ping: 1,
-    });
-
-    console.log("MongoDB connected successfully.");
-
-    await createDatabaseIndexes();
-
-    return db;
-  } catch (error) {
-    console.error("MongoDB connection error:", error?.message || error);
-
-    db = null;
-
-    if (client) {
-      try {
-        await client.close();
-      } catch (closeError) {
-        console.error(
-          "MongoDB cleanup error:",
-          closeError?.message || closeError,
-        );
+  connectionPromise = (async () => {
+    try {
+      if (!client) {
+        client = new MongoClient(MONGO_URI, mongoOptions);
       }
+
+      await client.connect();
+
+      db = client.db(DB_NAME);
+
+      productsCollection = db.collection("products");
+      usersCollection = db.collection("users");
+      cartsCollection = db.collection("carts");
+      ordersCollection = db.collection("orders");
+
+      await db.command({
+        ping: 1,
+      });
+
+      console.log("MongoDB connected successfully.");
+
+      /*
+       * Index creation is intentionally kept here.
+       *
+       * MongoDB createIndex is idempotent when the same
+       * index already exists.
+       */
+      await createDatabaseIndexes();
+
+      return db;
+    } catch (error) {
+      console.error("MongoDB connection error:", error?.stack || error);
+
+      db = null;
+
+      if (client) {
+        try {
+          await client.close();
+        } catch (closeError) {
+          console.error(
+            "MongoDB cleanup error:",
+            closeError?.message || closeError,
+          );
+        }
+      }
+
+      client = null;
+
+      throw error;
+    } finally {
+      connectionPromise = null;
     }
+  })();
 
-    client = null;
-
-    throw error;
-  } finally {
-    isConnecting = false;
-  }
+  return connectionPromise;
 };
 
+// ============================================================
+// DATABASE INITIALIZATION
+// ============================================================
+//
+// For Vercel/serverless this guarantees the database is ready
+// before the route handlers are used.
+//
+// ============================================================
+
 await connectDB();
+
+// ============================================================
+// HEALTH CHECK
+// ============================================================
 
 app.get("/", (req, res) => {
   return res.status(200).json({
@@ -293,19 +415,39 @@ app.get("/", (req, res) => {
   });
 });
 
+// ============================================================
+// AUTH ROUTES
+// ============================================================
+
 app.use("/auth", authRoutes(usersCollection));
 
+// ============================================================
+// USER ROUTES
+// ============================================================
+
 app.use("/users", usersRoutes(usersCollection));
+
+// ============================================================
+// PRODUCT ROUTES
+// ============================================================
 
 app.use(
   "/products",
   productsRoutes(productsCollection, verifyToken, verifyUser, verifyAdmin),
 );
 
+// ============================================================
+// CART ROUTES
+// ============================================================
+
 app.use(
   "/carts",
   cartsRoutes(cartsCollection, productsCollection, verifyToken),
 );
+
+// ============================================================
+// ORDER ROUTES
+// ============================================================
 
 app.use(
   "/orders",
@@ -319,6 +461,10 @@ app.use(
   ),
 );
 
+// ============================================================
+// ADMIN ROUTES
+// ============================================================
+
 app.use(
   "/admin",
   adminRoutes(
@@ -330,7 +476,15 @@ app.use(
   ),
 );
 
+// ============================================================
+// INVOICE ROUTES
+// ============================================================
+
 app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
+
+// ============================================================
+// 404 HANDLER
+// ============================================================
 
 app.use((req, res) => {
   return res.status(404).json({
@@ -339,6 +493,10 @@ app.use((req, res) => {
     path: req.originalUrl,
   });
 });
+
+// ============================================================
+// GLOBAL ERROR HANDLER
+// ============================================================
 
 app.use((err, req, res, next) => {
   console.error("GLOBAL SERVER ERROR:", err?.stack || err);
@@ -350,16 +508,24 @@ app.use((err, req, res, next) => {
 
   let message = "Internal Server Error.";
 
-  if (NODE_ENV !== "production") {
+  if (!isProduction) {
     message = err?.message || "Internal Server Error.";
-  } else if (statusCode === 403) {
-    message = "Forbidden.";
-  } else if (statusCode === 400) {
-    message = "Bad Request.";
-  } else if (statusCode === 401) {
-    message = "Unauthorized.";
-  } else if (statusCode === 404) {
-    message = "Not Found.";
+  } else {
+    if (statusCode === 400) {
+      message = "Bad Request.";
+    }
+
+    if (statusCode === 401) {
+      message = "Unauthorized.";
+    }
+
+    if (statusCode === 403) {
+      message = "Forbidden.";
+    }
+
+    if (statusCode === 404) {
+      message = "Not Found.";
+    }
   }
 
   return res.status(statusCode).json({
@@ -368,39 +534,9 @@ app.use((err, req, res, next) => {
   });
 });
 
-const closeDatabase = async (signal) => {
-  console.log(`${signal} received. Closing MongoDB connection...`);
-
-  try {
-    if (client) {
-      await client.close();
-
-      client = null;
-      db = null;
-
-      productsCollection = null;
-      usersCollection = null;
-      cartsCollection = null;
-      ordersCollection = null;
-
-      console.log("MongoDB connection closed successfully.");
-    }
-
-    process.exit(0);
-  } catch (error) {
-    console.error("Error while closing MongoDB:", error?.message || error);
-
-    process.exit(1);
-  }
-};
-
-process.once("SIGINT", () => {
-  void closeDatabase("SIGINT");
-});
-
-process.once("SIGTERM", () => {
-  void closeDatabase("SIGTERM");
-});
+// ============================================================
+// EXPORTS
+// ============================================================
 
 export {
   app,
