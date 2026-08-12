@@ -140,6 +140,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
   // =========================================================
 
   router.get("/", verifyToken, async (req, res) => {
+    console.log(req.user?.email);
+    console.log("this is the meail",email)
+    console.log('this is the data',data)
     try {
       const email = getAuthenticatedEmail(req);
 

@@ -1,9 +1,27 @@
-import dotenv from "dotenv";
-dotenv.config();
+import "./config/env.js";
+
+// dotenv.config();
+
+// console.log("=================================");
+// console.log("ENVIRONMENT CHECK");
+// console.log("=================================");
+
+// console.log("FIREBASE_PROJECT_ID:", process.env.FIREBASE_PROJECT_ID);
+
+// console.log("FIREBASE_CLIENT_EMAIL:", process.env.FIREBASE_CLIENT_EMAIL);
+
+// console.log(
+//   "FIREBASE_PRIVATE_KEY EXISTS:",
+//   Boolean(process.env.FIREBASE_PRIVATE_KEY),
+// );
+
+// console.log("=================================");
 
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import firebaseAdmin from "./utils/firebaseAdmin.js";
+
 import { MongoClient, ServerApiVersion } from "mongodb";
 
 // ============================================================

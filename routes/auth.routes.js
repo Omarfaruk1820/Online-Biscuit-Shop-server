@@ -3,43 +3,96 @@ import { Router } from "express";
 import createToken from "../middleware/createToken.js";
 import verifyToken from "../middleware/verifyToken.js";
 import verifyUser from "../middleware/verifyUser.js";
+import verifyFirebaseToken from "../middleware/verifyFirebaseToken.js";
 
 import cookieOptions from "../utils/cookieOptions.js";
 
 const authRoutes = (usersCollection) => {
+  // ======================================================
+  // VALIDATE DEPENDENCY
+  // ======================================================
+
+  if (!usersCollection) {
+    throw new Error("usersCollection is required in authRoutes.");
+  }
+
   const router = Router();
 
   // ======================================================
-  // HELPER
+  // HELPERS
   // ======================================================
 
   const normalizeEmail = (email = "") => {
     return typeof email === "string" ? email.trim().toLowerCase() : "";
   };
 
+  const normalizeStatus = (status = "") => {
+    return typeof status === "string" && status.trim()
+      ? status.trim().toLowerCase()
+      : "active";
+  };
+
   // ======================================================
   // POST /auth/jwt
+  //
+  // Firebase ID Token
+  //        ↓
+  // verifyFirebaseToken
+  //        ↓
+  // Firebase verified user
+  //        ↓
+  // MongoDB user
+  //        ↓
   // Create Application JWT
+  //        ↓
+  // HTTP-only Cookie
   // ======================================================
 
-  router.post("/jwt", async (req, res) => {
+  router.post("/jwt", verifyFirebaseToken, async (req, res) => {
     try {
-      // --------------------------------------------------
-      // VALIDATE EMAIL
-      // --------------------------------------------------
+      // ==================================================
+      // GET VERIFIED FIREBASE USER
+      // ==================================================
 
-      const email = normalizeEmail(req.body?.email);
+      const firebaseUser = req.firebaseUser;
 
-      if (!email) {
-        return res.status(400).json({
+      if (!firebaseUser) {
+        return res.status(401).json({
           success: false,
-          message: "Valid email is required.",
+          message: "Firebase authentication failed.",
         });
       }
 
-      // --------------------------------------------------
-      // FIND USER
-      // --------------------------------------------------
+      // ==================================================
+      // GET VERIFIED FIREBASE EMAIL
+      // ==================================================
+
+      const email = normalizeEmail(firebaseUser.email);
+
+      if (!email) {
+        return res.status(401).json({
+          success: false,
+          message: "Authenticated Firebase email is invalid.",
+        });
+      }
+
+      // ==================================================
+      // OPTIONAL EMAIL VERIFICATION CHECK
+      //
+      // Only enable this if your application requires
+      // verified email addresses.
+      // ==================================================
+
+      if (firebaseUser.email_verified === false) {
+        return res.status(403).json({
+          success: false,
+          message: "Please verify your email address before continuing.",
+        });
+      }
+
+      // ==================================================
+      // FIND USER IN MONGODB
+      // ==================================================
 
       const user = await usersCollection.findOne(
         {
@@ -62,52 +115,102 @@ const authRoutes = (usersCollection) => {
         },
       );
 
-      // --------------------------------------------------
+      // ==================================================
       // USER NOT FOUND
-      // --------------------------------------------------
+      // ==================================================
 
       if (!user) {
         return res.status(404).json({
           success: false,
-          message: "User not found.",
+          message: "User account was not found.",
         });
       }
 
-      // --------------------------------------------------
-      // ACCOUNT STATUS
-      // --------------------------------------------------
+      // ==================================================
+      // NORMALIZE DATABASE EMAIL
+      // ==================================================
 
-      if (user.status === "blocked") {
+      const databaseEmail = normalizeEmail(user.email);
+
+      // ==================================================
+      // EMAIL SAFETY CHECK
+      // ==================================================
+
+      if (!databaseEmail) {
+        console.error("AUTH JWT ERROR: User email is missing in database.");
+
+        return res.status(500).json({
+          success: false,
+          message: "User account has invalid authentication data.",
+        });
+      }
+
+      if (databaseEmail !== email) {
+        console.error(
+          "AUTH JWT ERROR: Firebase email and database email do not match.",
+        );
+
+        return res.status(403).json({
+          success: false,
+          message: "Authentication identity does not match the user account.",
+        });
+      }
+
+      // ==================================================
+      // ACCOUNT STATUS
+      // ==================================================
+
+      const status = normalizeStatus(user.status);
+
+      if (status === "blocked") {
         return res.status(403).json({
           success: false,
           message: "Your account has been blocked.",
         });
       }
 
-      // --------------------------------------------------
+      // ==================================================
       // CREATE APPLICATION JWT
-      // --------------------------------------------------
+      // ==================================================
 
-      const token = createToken({
-        email: user.email,
-      });
+      let token;
 
-      if (!token) {
+      try {
+        token = createToken({
+          email: databaseEmail,
+        });
+      } catch (tokenError) {
+        console.error(
+          "CREATE APPLICATION TOKEN ERROR:",
+          tokenError?.message || tokenError,
+        );
+
         return res.status(500).json({
           success: false,
           message: "Failed to create authentication token.",
         });
       }
 
-      // --------------------------------------------------
-      // SET HTTP-ONLY COOKIE
-      // --------------------------------------------------
+      // ==================================================
+      // SAFETY CHECK
+      // ==================================================
+
+      if (typeof token !== "string" || !token.trim()) {
+        return res.status(500).json({
+          success: false,
+          message: "Failed to create authentication token.",
+        });
+      }
+
+      // ==================================================
+      // SET HTTP-ONLY APPLICATION JWT COOKIE
+      // ==================================================
 
       res.cookie("token", token, cookieOptions);
 
-      // --------------------------------------------------
+      // ==================================================
       // RESPONSE
-      // --------------------------------------------------
+      // ==================================================
 
       return res.status(200).json({
         success: true,
@@ -115,13 +218,21 @@ const authRoutes = (usersCollection) => {
 
         user: {
           _id: user._id,
+
           name: user.name || "",
-          email: user.email,
+
+          email: databaseEmail,
+
           photo: user.photo || "",
+
           role: user.role || "user",
+
           provider: user.provider || "password",
-          status: user.status || "active",
-          emailVerified: Boolean(user.emailVerified),
+
+          status,
+
+          emailVerified:
+            Boolean(user.emailVerified) || Boolean(firebaseUser.email_verified),
         },
       });
     } catch (error) {
@@ -136,7 +247,8 @@ const authRoutes = (usersCollection) => {
 
   // ======================================================
   // POST /auth/logout
-  // Clear JWT Cookie
+  //
+  // Clear Application JWT Cookie
   // ======================================================
 
   router.post("/logout", (req, res) => {
@@ -162,7 +274,14 @@ const authRoutes = (usersCollection) => {
 
   // ======================================================
   // GET /auth/me
-  // Get Currently Authenticated User
+  //
+  // Application JWT Cookie
+  //        ↓
+  // verifyToken
+  //        ↓
+  // verifyUser
+  //        ↓
+  // MongoDB User
   // ======================================================
 
   router.get(
@@ -171,33 +290,48 @@ const authRoutes = (usersCollection) => {
     verifyUser(usersCollection),
     async (req, res) => {
       try {
+        // ==================================================
+        // USER ALREADY VERIFIED BY verifyUser
+        // ==================================================
+
         const user = req.dbUser;
 
-        // ------------------------------------------------
-        // USER NOT FOUND
-        // ------------------------------------------------
-
         if (!user) {
-          return res.status(404).json({
+          return res.status(401).json({
             success: false,
-            message: "User not found.",
+            message: "Authenticated user is unavailable.",
           });
         }
 
-        // ------------------------------------------------
-        // BLOCKED ACCOUNT
-        // ------------------------------------------------
+        // ==================================================
+        // ACCOUNT STATUS
+        // ==================================================
 
-        if (user.status === "blocked") {
+        const status = normalizeStatus(user.status);
+
+        if (status === "blocked") {
           return res.status(403).json({
             success: false,
             message: "Your account has been blocked.",
           });
         }
 
-        // ------------------------------------------------
+        // ==================================================
+        // NORMALIZE EMAIL
+        // ==================================================
+
+        const email = normalizeEmail(user.email);
+
+        if (!email) {
+          return res.status(500).json({
+            success: false,
+            message: "Authenticated user has invalid email data.",
+          });
+        }
+
+        // ==================================================
         // RESPONSE
-        // ------------------------------------------------
+        // ==================================================
 
         return res.status(200).json({
           success: true,
@@ -207,7 +341,7 @@ const authRoutes = (usersCollection) => {
 
             name: user.name || "",
 
-            email: user.email,
+            email,
 
             photo: user.photo || "",
 
@@ -215,7 +349,7 @@ const authRoutes = (usersCollection) => {
 
             provider: user.provider || "password",
 
-            status: user.status || "active",
+            status,
 
             emailVerified: Boolean(user.emailVerified),
 

@@ -1,13 +1,19 @@
 import jwt from "jsonwebtoken";
 
-// if (!process.env.JWT_SECRET) {
-//   throw new Error("JWT_SECRET is missing.");
-// }
-
 const createToken = ({ email }) => {
+  if (typeof email !== "string" || !email.trim()) {
+    throw new Error("Valid email is required to create token.");
+  }
+
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is missing.");
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+
   return jwt.sign(
     {
-      email: email.trim().toLowerCase(),
+      email: normalizedEmail,
       type: "access",
     },
     process.env.JWT_SECRET,

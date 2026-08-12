@@ -1,5 +1,3 @@
-// middleware/verifyUser.js
-
 const verifyUser = (usersCollection) => {
   if (!usersCollection) {
     throw new Error("usersCollection is required in verifyUser middleware.");
@@ -7,10 +5,6 @@ const verifyUser = (usersCollection) => {
 
   return async (req, res, next) => {
     try {
-      // ======================================================
-      // GET AUTHENTICATED EMAIL
-      // ======================================================
-
       const email = req.user?.email;
 
       if (typeof email !== "string" || !email.trim()) {
@@ -20,23 +14,11 @@ const verifyUser = (usersCollection) => {
         });
       }
 
-      // ======================================================
-      // NORMALIZE EMAIL
-      // ======================================================
-
       const normalizedEmail = email.trim().toLowerCase();
-
-      // ======================================================
-      // FIND USER
-      // ======================================================
 
       const user = await usersCollection.findOne({
         email: normalizedEmail,
       });
-
-      // ======================================================
-      // USER NOT FOUND
-      // ======================================================
 
       if (!user) {
         return res.status(404).json({
@@ -45,26 +27,22 @@ const verifyUser = (usersCollection) => {
         });
       }
 
-      // ======================================================
-      // ACCOUNT STATUS
-      // ======================================================
+      const status =
+        typeof user.status === "string" && user.status.trim()
+          ? user.status.trim().toLowerCase()
+          : "active";
 
-      if (user.status === "blocked") {
+      if (status === "blocked") {
         return res.status(403).json({
           success: false,
           message: "Your account has been blocked.",
         });
       }
 
-      // ======================================================
-      // NORMALIZE APPLICATION USER
-      // ======================================================
-
-      req.dbUser = user;
-
-      // ======================================================
-      // CONTINUE
-      // ======================================================
+      req.dbUser = {
+        ...user,
+        status,
+      };
 
       return next();
     } catch (error) {
