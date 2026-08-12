@@ -84,13 +84,15 @@ const CLIENT_URL_PROD = process.env.CLIENT_URL_PROD.trim();
 // CORS
 // ============================================================
 
-const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD].filter(Boolean);
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  process.env.CLIENT_URL_PROD,
+].filter(Boolean);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests without an Origin header.
-      // Examples: server-to-server requests, health checks, etc.
+      // Postman/server-to-server requests
       if (!origin) {
         return callback(null, true);
       }
@@ -99,21 +101,9 @@ app.use(
         return callback(null, true);
       }
 
-      console.error(`CORS blocked origin: ${origin}`);
-
-      const error = new Error("Not allowed by CORS");
-      error.status = 403;
-
-      return callback(error);
+      return callback(new Error(`CORS blocked for origin: ${origin}`), false);
     },
-
     credentials: true,
-
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
-
-    allowedHeaders: ["Content-Type", "Authorization"],
-
-    optionsSuccessStatus: 204,
   }),
 );
 
