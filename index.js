@@ -23,7 +23,7 @@ import verifyAdmin from "./middleware/verifyAdmin.js";
 // ============================================================
 // APP
 // ============================================================
-
+ const PORT = Number(process.env.PORT) || 5000;
 const app = express();
 
 app.disable("x-powered-by");
@@ -74,7 +74,13 @@ const CLIENT_URL_PROD = process.env.CLIENT_URL_PROD.trim();
 // ALLOWED CORS ORIGINS
 // ============================================================
 
-const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD, "http://localhost:5173"]
+// const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD, "http://localhost:5173"]
+//   .map((origin) => origin.trim().replace(/\/$/, ""))
+//   .filter(Boolean);
+
+// console.log("Allowed CORS origins:", allowedOrigins);
+
+const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD]
   .map((origin) => origin.trim().replace(/\/$/, ""))
   .filter(Boolean);
 
@@ -533,6 +539,14 @@ app.use((err, req, res, next) => {
     message,
   });
 });
+
+
+
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Biscuit Shop API running on http://localhost:${PORT}`);
+  });
+}
 
 // ============================================================
 // EXPORTS

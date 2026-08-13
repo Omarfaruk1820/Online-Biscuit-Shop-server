@@ -1,16 +1,13 @@
 {
   "name": "biscuit-shop-server",
   "version": "1.0.0",
-  "description": "",
+  "description": "Biscuit Shop API",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "nodemon index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "module",
   "dependencies": {
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
@@ -21,7 +18,9 @@
     "firebase-admin": "^14.2.0",
     "jsonwebtoken": "^9.0.3",
     "mongodb": "^7.2.0",
-    "nodemon": "^3.1.14",
     "pdfkit": "^0.19.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }
