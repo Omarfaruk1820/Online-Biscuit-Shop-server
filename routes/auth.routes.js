@@ -8,23 +8,11 @@ import verifyFirebaseToken from "../middleware/verifyFirebaseToken.js";
 import cookieOptions from "../utils/cookieOptions.js";
 
 const authRoutes = (usersCollection) => {
-  // ============================================================
-  // VALIDATE DEPENDENCY
-  // ============================================================
-
   if (!usersCollection) {
     throw new Error("authRoutes: usersCollection is required.");
   }
 
-  // ============================================================
-  // ROUTER
-  // ============================================================
-
   const router = Router();
-
-  // ============================================================
-  // HELPERS
-  // ============================================================
 
   const normalizeEmail = (email = "") => {
     if (typeof email !== "string") {
@@ -42,18 +30,8 @@ const authRoutes = (usersCollection) => {
     return status.trim().toLowerCase();
   };
 
-  // ============================================================
-  // POST /auth/jwt
-  //
-  // Firebase token -> MongoDB user -> Application JWT cookie
-  // ============================================================
-
   router.post("/jwt", verifyFirebaseToken, async (req, res) => {
     try {
-      // ----------------------------------------------------------
-      // VERIFIED FIREBASE USER
-      // ----------------------------------------------------------
-
       const firebaseUser = req.firebaseUser;
 
       if (!firebaseUser) {
@@ -62,10 +40,6 @@ const authRoutes = (usersCollection) => {
           message: "Firebase authentication failed.",
         });
       }
-
-      // ----------------------------------------------------------
-      // EMAIL
-      // ----------------------------------------------------------
 
       const email = normalizeEmail(firebaseUser.email);
 
@@ -76,20 +50,12 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------------
-      // EMAIL VERIFICATION
-      // ----------------------------------------------------------
-
       if (firebaseUser.email_verified === false) {
         return res.status(403).json({
           success: false,
           message: "Please verify your email address before continuing.",
         });
       }
-
-      // ----------------------------------------------------------
-      // FIND USER
-      // ----------------------------------------------------------
 
       const user = await usersCollection.findOne(
         {
@@ -112,20 +78,12 @@ const authRoutes = (usersCollection) => {
         },
       );
 
-      // ----------------------------------------------------------
-      // USER NOT FOUND
-      // ----------------------------------------------------------
-
       if (!user) {
         return res.status(404).json({
           success: false,
           message: "User account was not found.",
         });
       }
-
-      // ----------------------------------------------------------
-      // DATABASE EMAIL
-      // ----------------------------------------------------------
 
       const databaseEmail = normalizeEmail(user.email);
 
@@ -140,10 +98,6 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------------
-      // IDENTITY CHECK
-      // ----------------------------------------------------------
-
       if (databaseEmail !== email) {
         console.error(
           "POST /auth/jwt: Firebase email and database email do not match.",
@@ -155,10 +109,6 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------------
-      // ACCOUNT STATUS
-      // ----------------------------------------------------------
-
       const status = normalizeStatus(user.status);
 
       if (status === "blocked") {
@@ -167,10 +117,6 @@ const authRoutes = (usersCollection) => {
           message: "Your account has been blocked.",
         });
       }
-
-      // ----------------------------------------------------------
-      // CREATE APPLICATION JWT
-      // ----------------------------------------------------------
 
       let token;
 
@@ -190,10 +136,6 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------------
-      // TOKEN VALIDATION
-      // ----------------------------------------------------------
-
       if (typeof token !== "string" || !token.trim()) {
         return res.status(500).json({
           success: false,
@@ -201,15 +143,7 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------------
-      // HTTP-ONLY COOKIE
-      // ----------------------------------------------------------
-
       res.cookie("token", token, cookieOptions);
-
-      // ----------------------------------------------------------
-      // RESPONSE
-      // ----------------------------------------------------------
 
       return res.status(200).json({
         success: true,
@@ -244,10 +178,6 @@ const authRoutes = (usersCollection) => {
     }
   });
 
-  // ============================================================
-  // POST /auth/logout
-  // ============================================================
-
   router.post("/logout", (req, res) => {
     try {
       res.clearCookie("token", {
@@ -269,20 +199,12 @@ const authRoutes = (usersCollection) => {
     }
   });
 
-  // ============================================================
-  // GET /auth/me
-  // ============================================================
-
   router.get(
     "/me",
     verifyToken,
     verifyUser(usersCollection),
     async (req, res) => {
       try {
-        // --------------------------------------------------------
-        // VERIFIED DATABASE USER
-        // --------------------------------------------------------
-
         const user = req.dbUser;
 
         if (!user) {
@@ -291,10 +213,6 @@ const authRoutes = (usersCollection) => {
             message: "Authenticated user is unavailable.",
           });
         }
-
-        // --------------------------------------------------------
-        // ACCOUNT STATUS
-        // --------------------------------------------------------
 
         const status = normalizeStatus(user.status);
 
@@ -305,10 +223,6 @@ const authRoutes = (usersCollection) => {
           });
         }
 
-        // --------------------------------------------------------
-        // EMAIL
-        // --------------------------------------------------------
-
         const email = normalizeEmail(user.email);
 
         if (!email) {
@@ -317,10 +231,6 @@ const authRoutes = (usersCollection) => {
             message: "Authenticated user has invalid email data.",
           });
         }
-
-        // --------------------------------------------------------
-        // RESPONSE
-        // --------------------------------------------------------
 
         return res.status(200).json({
           success: true,

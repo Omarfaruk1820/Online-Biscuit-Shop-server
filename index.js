@@ -21,7 +21,7 @@ import verifyUser from "./middleware/verifyUser.js";
 import verifyAdmin from "./middleware/verifyAdmin.js";
 
 // ============================================================
-// APP
+// EXPRESS APP
 // ============================================================
 
 const app = express();
@@ -38,8 +38,6 @@ const NODE_ENV = String(process.env.NODE_ENV || "development")
 
 const isProduction = NODE_ENV === "production";
 
-// const PORT = Number(process.env.PORT) || 5000;
-
 // ============================================================
 // REQUIRED ENVIRONMENT VARIABLES
 // ============================================================
@@ -53,16 +51,20 @@ const requiredEnv = [
   "CLIENT_URL_PROD",
 ];
 
-for (const key of requiredEnv) {
+const missingEnv = requiredEnv.filter((key) => {
   const value = process.env[key];
 
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`Missing required environment variable: ${key}`);
-  }
+  return typeof value !== "string" || !value.trim();
+});
+
+if (missingEnv.length > 0) {
+  throw new Error(
+    `Missing required environment variables: ${missingEnv.join(", ")}`,
+  );
 }
 
 // ============================================================
-// ENVIRONMENT VALUES
+// ENV VALUES
 // ============================================================
 
 const DB_USERNAME = process.env.DB_USERNAME.trim();
@@ -73,7 +75,7 @@ const CLIENT_URL = process.env.CLIENT_URL.trim();
 const CLIENT_URL_PROD = process.env.CLIENT_URL_PROD.trim();
 
 // ============================================================
-// CORS ORIGIN NORMALIZER
+// CORS
 // ============================================================
 
 const normalizeOrigin = (origin = "") => {
@@ -84,29 +86,17 @@ const normalizeOrigin = (origin = "") => {
   return origin.trim().replace(/\/$/, "");
 };
 
-// ============================================================
-// ALLOWED CORS ORIGINS
-// ============================================================
-
 const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD]
   .map(normalizeOrigin)
   .filter(Boolean);
 
+console.log("Environment:", NODE_ENV);
 console.log("Allowed CORS origins:", allowedOrigins);
-
-// ============================================================
-// CORS
-// ============================================================
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests without Origin.
-      //
-      // Examples:
-      // - Postman
-      // - server-to-server requests
-      // - health checks
+      // Allow server-to-server / health-check requests
       if (!origin) {
         return callback(null, true);
       }
@@ -119,7 +109,6 @@ app.use(
 
       console.warn("CORS blocked:", origin);
 
-      // Do not throw here.
       return callback(null, false);
     },
 
@@ -143,10 +132,17 @@ app.use(
   }),
 );
 
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: "2mb",
+  }),
+);
+
 app.use(cookieParser());
 
 // ============================================================
-// MONGODB URI
+// MONGODB CONNECTION
 // ============================================================
 
 const MONGO_URI =
@@ -155,19 +151,14 @@ const MONGO_URI =
   `@cluster0.g29mryf.mongodb.net/` +
   `?retryWrites=true&w=majority`;
 
-// ============================================================
-// MONGODB OPTIONS
-// ============================================================
-
 const mongoOptions = {
   maxPoolSize: 10,
   minPoolSize: 0,
+
   maxIdleTimeMS: 30000,
 
   serverSelectionTimeoutMS: 10000,
-
   connectTimeoutMS: 10000,
-
   socketTimeoutMS: 45000,
 
   serverApi: {
@@ -178,7 +169,7 @@ const mongoOptions = {
 };
 
 // ============================================================
-// MONGODB STATE
+// DATABASE STATE
 // ============================================================
 
 let client = null;
@@ -190,40 +181,46 @@ let cartsCollection = null;
 let ordersCollection = null;
 
 let connectionPromise = null;
+let routesMounted = false;
 
 // ============================================================
 // CONNECT DATABASE
 // ============================================================
 
-export const connectDB = async () => {
+const connectDB = async () => {
   // Already connected
   if (db) {
     return db;
   }
 
-  // Connection already in progress
+  // Connection already running
   if (connectionPromise) {
     return connectionPromise;
   }
 
   connectionPromise = (async () => {
     try {
+      console.log("Connecting to MongoDB...");
+
       if (!client) {
         client = new MongoClient(MONGO_URI, mongoOptions);
       }
 
       await client.connect();
 
-      db = client.db(DB_NAME);
+      const database = client.db(DB_NAME);
+
+      // Verify connection
+      await database.command({
+        ping: 1,
+      });
+
+      db = database;
 
       productsCollection = db.collection("products");
       usersCollection = db.collection("users");
       cartsCollection = db.collection("carts");
       ordersCollection = db.collection("orders");
-
-      await db.command({
-        ping: 1,
-      });
 
       console.log("MongoDB connected successfully.");
 
@@ -261,129 +258,178 @@ export const connectDB = async () => {
 };
 
 // ============================================================
-// INITIALIZE DATABASE BEFORE ROUTES
-// ============================================================
-//
-// IMPORTANT:
-//
-// Route factories such as:
-//
-// authRoutes(usersCollection)
-//
-// need the MongoDB collections immediately.
-//
-// Therefore database connection MUST happen before
-// registering those routes.
-//
-// This fixes:
-//
-// "usersCollection is required in authRoutes."
-//
+// MOUNT ROUTES
 // ============================================================
 
-await connectDB();
+const mountRoutes = () => {
+  if (routesMounted) {
+    return;
+  }
 
-// ============================================================
-// DATABASE SAFETY CHECK
-// ============================================================
+  if (
+    !productsCollection ||
+    !usersCollection ||
+    !cartsCollection ||
+    !ordersCollection
+  ) {
+    throw new Error(
+      "Cannot mount routes because MongoDB collections are unavailable.",
+    );
+  }
 
-if (
-  !client ||
-  !db ||
-  !productsCollection ||
-  !usersCollection ||
-  !cartsCollection ||
-  !ordersCollection
-) {
-  throw new Error(
-    "Database initialization failed: required collections are unavailable.",
+  // ----------------------------------------------------------
+  // AUTH
+  // ----------------------------------------------------------
+
+  app.use("/auth", authRoutes(usersCollection));
+
+  // ----------------------------------------------------------
+  // USERS
+  // ----------------------------------------------------------
+
+  app.use("/users", usersRoutes(usersCollection));
+
+  // ----------------------------------------------------------
+  // PRODUCTS
+  // ----------------------------------------------------------
+
+  app.use(
+    "/products",
+    productsRoutes(
+      productsCollection,
+      usersCollection,
+      verifyToken,
+      verifyUser,
+      verifyAdmin,
+    ),
   );
-}
+
+  // ----------------------------------------------------------
+  // CARTS
+  // ----------------------------------------------------------
+
+  app.use(
+    "/carts",
+    cartsRoutes(cartsCollection, productsCollection, verifyToken),
+  );
+
+  // ----------------------------------------------------------
+  // ORDERS
+  // ----------------------------------------------------------
+
+  app.use(
+    "/orders",
+    ordersRoutes(
+      client,
+      ordersCollection,
+      cartsCollection,
+      productsCollection,
+      verifyToken,
+      verifyAdmin,
+    ),
+  );
+
+  // ----------------------------------------------------------
+  // ADMIN
+  // ----------------------------------------------------------
+
+  app.use(
+    "/admin",
+    adminRoutes(
+      usersCollection,
+      productsCollection,
+      ordersCollection,
+      verifyToken,
+      verifyAdmin,
+    ),
+  );
+
+  // ----------------------------------------------------------
+  // INVOICE
+  // ----------------------------------------------------------
+
+  app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
+
+  routesMounted = true;
+
+  console.log("Application routes mounted successfully.");
+};
+
+// ============================================================
+// INITIALIZATION
+// ============================================================
+
+let initializationPromise = null;
+
+const initializeApplication = async () => {
+  if (routesMounted) {
+    return;
+  }
+
+  if (initializationPromise) {
+    return initializationPromise;
+  }
+
+  initializationPromise = (async () => {
+    try {
+      await connectDB();
+
+      mountRoutes();
+    } catch (error) {
+      console.error("APPLICATION INITIALIZATION ERROR:", error?.stack || error);
+
+      throw error;
+    } finally {
+      initializationPromise = null;
+    }
+  })();
+
+  return initializationPromise;
+};
 
 // ============================================================
 // HEALTH CHECK
 // ============================================================
 
-app.get("/", (req, res) => {
-  return res.status(200).json({
-    success: true,
-    message: "Biscuit Shop API Running",
-    environment: NODE_ENV,
-    timestamp: new Date().toISOString(),
-  });
+app.get("/", async (req, res) => {
+  try {
+    await initializeApplication();
+
+    return res.status(200).json({
+      success: true,
+      message: "Biscuit Shop API Running",
+      environment: NODE_ENV,
+      database: db ? "connected" : "disconnected",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("GET / HEALTH CHECK ERROR:", error?.stack || error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Server initialization failed.",
+    });
+  }
 });
 
 // ============================================================
-// AUTH ROUTES
+// INITIALIZATION MIDDLEWARE
 // ============================================================
 
-app.use("/auth", authRoutes(usersCollection));
+app.use(async (req, res, next) => {
+  try {
+    await initializeApplication();
 
-// ============================================================
-// USER ROUTES
-// ============================================================
+    return next();
+  } catch (error) {
+    console.error("REQUEST INITIALIZATION ERROR:", error?.stack || error);
 
-app.use("/users", usersRoutes(usersCollection));
-
-// ============================================================
-// PRODUCT ROUTES
-// ============================================================
-
-app.use(
-  "/products",
-  productsRoutes(
-    productsCollection,
-    usersCollection,
-    verifyToken,
-    verifyUser,
-    verifyAdmin,
-  ),
-);
-// ============================================================
-// CART ROUTES
-// ============================================================
-
-app.use(
-  "/carts",
-  cartsRoutes(cartsCollection, productsCollection, verifyToken),
-);
-
-// ============================================================
-// ORDER ROUTES
-// ============================================================
-
-app.use(
-  "/orders",
-  ordersRoutes(
-    client,
-    ordersCollection,
-    cartsCollection,
-    productsCollection,
-    verifyToken,
-    verifyAdmin,
-  ),
-);
-
-// ============================================================
-// ADMIN ROUTES
-// ============================================================
-
-app.use(
-  "/admin",
-  adminRoutes(
-    usersCollection,
-    productsCollection,
-    ordersCollection,
-    verifyToken,
-    verifyAdmin,
-  ),
-);
-
-// ============================================================
-// INVOICE ROUTES
-// ============================================================
-
-app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
+    return res.status(500).json({
+      success: false,
+      message: "Server initialization failed.",
+    });
+  }
+});
 
 // ============================================================
 // 404 HANDLER
@@ -414,14 +460,25 @@ app.use((err, req, res, next) => {
   if (!isProduction) {
     message = err?.message || "Internal Server Error.";
   } else {
-    if (statusCode === 400) {
-      message = "Bad Request.";
-    } else if (statusCode === 401) {
-      message = "Unauthorized.";
-    } else if (statusCode === 403) {
-      message = "Forbidden.";
-    } else if (statusCode === 404) {
-      message = "Not Found.";
+    switch (statusCode) {
+      case 400:
+        message = "Bad Request.";
+        break;
+
+      case 401:
+        message = "Unauthorized.";
+        break;
+
+      case 403:
+        message = "Forbidden.";
+        break;
+
+      case 404:
+        message = "Not Found.";
+        break;
+
+      default:
+        message = "Internal Server Error.";
     }
   }
 
@@ -432,21 +489,12 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// LOCAL DEVELOPMENT SERVER
-// ============================================================
-
-// if (!process.env.VERCEL) {
-//   app.listen(PORT, () => {
-//     console.log(`Biscuit Shop API running on http://localhost:${PORT}`);
-//   });
-// }
-
-// ============================================================
 // EXPORTS
 // ============================================================
 
 export {
   app,
+  connectDB,
   client,
   db,
   productsCollection,
