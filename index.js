@@ -23,7 +23,7 @@ import verifyAdmin from "./middleware/verifyAdmin.js";
 // ============================================================
 // APP
 // ============================================================
- const PORT = Number(process.env.PORT) || 5000;
+
 const app = express();
 
 app.disable("x-powered-by");
@@ -37,6 +37,8 @@ const NODE_ENV = String(process.env.NODE_ENV || "development")
   .toLowerCase();
 
 const isProduction = NODE_ENV === "production";
+
+const PORT = Number(process.env.PORT) || 5000;
 
 // ============================================================
 // REQUIRED ENVIRONMENT VARIABLES
@@ -60,7 +62,7 @@ for (const key of requiredEnv) {
 }
 
 // ============================================================
-// ENV VALUES
+// ENVIRONMENT VALUES
 // ============================================================
 
 const DB_USERNAME = process.env.DB_USERNAME.trim();
@@ -71,17 +73,23 @@ const CLIENT_URL = process.env.CLIENT_URL.trim();
 const CLIENT_URL_PROD = process.env.CLIENT_URL_PROD.trim();
 
 // ============================================================
+// CORS ORIGIN NORMALIZER
+// ============================================================
+
+const normalizeOrigin = (origin = "") => {
+  if (typeof origin !== "string") {
+    return "";
+  }
+
+  return origin.trim().replace(/\/$/, "");
+};
+
+// ============================================================
 // ALLOWED CORS ORIGINS
 // ============================================================
 
-// const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD, "http://localhost:5173"]
-//   .map((origin) => origin.trim().replace(/\/$/, ""))
-//   .filter(Boolean);
-
-// console.log("Allowed CORS origins:", allowedOrigins);
-
 const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD]
-  .map((origin) => origin.trim().replace(/\/$/, ""))
+  .map(normalizeOrigin)
   .filter(Boolean);
 
 console.log("Allowed CORS origins:", allowedOrigins);
@@ -93,13 +101,17 @@ console.log("Allowed CORS origins:", allowedOrigins);
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Requests without Origin:
-      // Postman, server-to-server, health checks, etc.
+      // Allow requests without Origin.
+      //
+      // Examples:
+      // - Postman
+      // - server-to-server requests
+      // - health checks
       if (!origin) {
         return callback(null, true);
       }
 
-      const normalizedOrigin = origin.trim().replace(/\/$/, "");
+      const normalizedOrigin = normalizeOrigin(origin);
 
       if (allowedOrigins.includes(normalizedOrigin)) {
         return callback(null, true);
@@ -107,9 +119,7 @@ app.use(
 
       console.warn("CORS blocked:", origin);
 
-      // IMPORTANT:
-      // Do not throw an Error here.
-      // Return false so cors middleware handles it cleanly.
+      // Do not throw here.
       return callback(null, false);
     },
 
@@ -136,7 +146,7 @@ app.use(
 app.use(cookieParser());
 
 // ============================================================
-// MONGODB
+// MONGODB URI
 // ============================================================
 
 const MONGO_URI =
@@ -182,150 +192,6 @@ let ordersCollection = null;
 let connectionPromise = null;
 
 // ============================================================
-// DATABASE INDEX HELPER
-// ============================================================
-
-const createIndexIfMissing = async (collection, key, options = {}) => {
-  if (!collection) {
-    throw new Error("Collection is required for index creation.");
-  }
-
-  try {
-    const indexes = await collection.listIndexes().toArray();
-
-    const exists = indexes.some(
-      (index) => JSON.stringify(index.key) === JSON.stringify(key),
-    );
-
-    if (exists) {
-      return;
-    }
-
-    await collection.createIndex(key, options);
-
-    console.log(`MongoDB index created: ${collection.collectionName}`, key);
-  } catch (error) {
-    console.error(
-      `MongoDB index creation failed: ${collection.collectionName}`,
-      error?.message || error,
-    );
-
-    throw error;
-  }
-};
-
-// ============================================================
-// DATABASE INDEXES
-// ============================================================
-
-const createDatabaseIndexes = async () => {
-  if (
-    !usersCollection ||
-    !productsCollection ||
-    !cartsCollection ||
-    !ordersCollection
-  ) {
-    throw new Error("Database collections are not initialized.");
-  }
-
-  await Promise.all([
-    // USERS
-    createIndexIfMissing(usersCollection, { email: 1 }, { unique: true }),
-
-    createIndexIfMissing(usersCollection, {
-      role: 1,
-    }),
-
-    createIndexIfMissing(usersCollection, {
-      status: 1,
-    }),
-
-    createIndexIfMissing(usersCollection, {
-      createdAt: -1,
-    }),
-
-    createIndexIfMissing(usersCollection, {
-      lastLogin: -1,
-    }),
-
-    // PRODUCTS
-    createIndexIfMissing(productsCollection, {
-      category: 1,
-    }),
-
-    createIndexIfMissing(productsCollection, {
-      brand: 1,
-    }),
-
-    createIndexIfMissing(productsCollection, {
-      price: 1,
-    }),
-
-    createIndexIfMissing(productsCollection, {
-      rating: -1,
-    }),
-
-    createIndexIfMissing(productsCollection, {
-      discount: -1,
-    }),
-
-    createIndexIfMissing(productsCollection, {
-      stock: 1,
-    }),
-
-    createIndexIfMissing(productsCollection, {
-      createdAt: -1,
-    }),
-
-    // CARTS
-    createIndexIfMissing(
-      cartsCollection,
-      {
-        email: 1,
-        productId: 1,
-      },
-      {
-        unique: true,
-      },
-    ),
-
-    createIndexIfMissing(cartsCollection, {
-      email: 1,
-      createdAt: -1,
-    }),
-
-    // ORDERS
-    createIndexIfMissing(ordersCollection, {
-      email: 1,
-      status: 1,
-      createdAt: -1,
-    }),
-
-    createIndexIfMissing(ordersCollection, {
-      status: 1,
-      createdAt: -1,
-    }),
-
-    createIndexIfMissing(ordersCollection, {
-      createdAt: -1,
-    }),
-
-    createIndexIfMissing(
-      ordersCollection,
-      {
-        orderNumber: 1,
-      },
-      {
-        unique: true,
-        sparse: true,
-      },
-    ),
-  ]);
-
-  console.log("MongoDB database indexes are ready.");
-};
-
-// ============================================================
 // CONNECT DATABASE
 // ============================================================
 
@@ -361,19 +227,16 @@ export const connectDB = async () => {
 
       console.log("MongoDB connected successfully.");
 
-      /*
-       * Index creation is intentionally kept here.
-       *
-       * MongoDB createIndex is idempotent when the same
-       * index already exists.
-       */
-      await createDatabaseIndexes();
-
       return db;
     } catch (error) {
       console.error("MongoDB connection error:", error?.stack || error);
 
       db = null;
+
+      productsCollection = null;
+      usersCollection = null;
+      cartsCollection = null;
+      ordersCollection = null;
 
       if (client) {
         try {
@@ -398,15 +261,44 @@ export const connectDB = async () => {
 };
 
 // ============================================================
-// DATABASE INITIALIZATION
+// INITIALIZE DATABASE BEFORE ROUTES
 // ============================================================
 //
-// For Vercel/serverless this guarantees the database is ready
-// before the route handlers are used.
+// IMPORTANT:
+//
+// Route factories such as:
+//
+// authRoutes(usersCollection)
+//
+// need the MongoDB collections immediately.
+//
+// Therefore database connection MUST happen before
+// registering those routes.
+//
+// This fixes:
+//
+// "usersCollection is required in authRoutes."
 //
 // ============================================================
 
 await connectDB();
+
+// ============================================================
+// DATABASE SAFETY CHECK
+// ============================================================
+
+if (
+  !client ||
+  !db ||
+  !productsCollection ||
+  !usersCollection ||
+  !cartsCollection ||
+  !ordersCollection
+) {
+  throw new Error(
+    "Database initialization failed: required collections are unavailable.",
+  );
+}
 
 // ============================================================
 // HEALTH CHECK
@@ -439,9 +331,14 @@ app.use("/users", usersRoutes(usersCollection));
 
 app.use(
   "/products",
-  productsRoutes(productsCollection, verifyToken, verifyUser, verifyAdmin),
+  productsRoutes(
+    productsCollection,
+    usersCollection,
+    verifyToken,
+    verifyUser,
+    verifyAdmin,
+  ),
 );
-
 // ============================================================
 // CART ROUTES
 // ============================================================
@@ -519,17 +416,11 @@ app.use((err, req, res, next) => {
   } else {
     if (statusCode === 400) {
       message = "Bad Request.";
-    }
-
-    if (statusCode === 401) {
+    } else if (statusCode === 401) {
       message = "Unauthorized.";
-    }
-
-    if (statusCode === 403) {
+    } else if (statusCode === 403) {
       message = "Forbidden.";
-    }
-
-    if (statusCode === 404) {
+    } else if (statusCode === 404) {
       message = "Not Found.";
     }
   }
@@ -540,7 +431,9 @@ app.use((err, req, res, next) => {
   });
 });
 
-
+// ============================================================
+// LOCAL DEVELOPMENT SERVER
+// ============================================================
 
 if (!process.env.VERCEL) {
   app.listen(PORT, () => {
