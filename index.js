@@ -38,7 +38,7 @@ const NODE_ENV = String(process.env.NODE_ENV || "development")
 
 const isProduction = NODE_ENV === "production";
 
-const PORT = Number(process.env.PORT) || 5000;
+// const PORT = Number(process.env.PORT) || 5000;
 
 // ============================================================
 // REQUIRED ENVIRONMENT VARIABLES
@@ -435,11 +435,11 @@ app.use((err, req, res, next) => {
 // LOCAL DEVELOPMENT SERVER
 // ============================================================
 
-if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`Biscuit Shop API running on http://localhost:${PORT}`);
-  });
-}
+// if (!process.env.VERCEL) {
+//   app.listen(PORT, () => {
+//     console.log(`Biscuit Shop API running on http://localhost:${PORT}`);
+//   });
+// }
 
 // ============================================================
 // EXPORTS
