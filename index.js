@@ -39,7 +39,7 @@ const NODE_ENV = String(process.env.NODE_ENV || "development")
 const isProduction = NODE_ENV === "production";
 
 // ============================================================
-// REQUIRED ENVIRONMENT VARIABLES
+// ENVIRONMENT VALIDATION
 // ============================================================
 
 const requiredEnv = [
@@ -83,20 +83,23 @@ const normalizeOrigin = (origin = "") => {
     return "";
   }
 
-  return origin.trim().replace(/\/$/, "");
+  return origin.trim().replace(/\/+$/, "");
 };
 
 const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD]
   .map(normalizeOrigin)
   .filter(Boolean);
 
+console.log("==========================================");
+console.log("Biscuit Shop API");
 console.log("Environment:", NODE_ENV);
-console.log("Allowed CORS origins:", allowedOrigins);
+console.log("Allowed Origins:", allowedOrigins);
+console.log("==========================================");
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow server-to-server / health-check requests
+      // Server-to-server / browser without Origin
       if (!origin) {
         return callback(null, true);
       }
@@ -142,7 +145,7 @@ app.use(
 app.use(cookieParser());
 
 // ============================================================
-// MONGODB CONNECTION
+// MONGODB
 // ============================================================
 
 const MONGO_URI =
@@ -210,7 +213,6 @@ const connectDB = async () => {
 
       const database = client.db(DB_NAME);
 
-      // Verify connection
       await database.command({
         ping: 1,
       });
@@ -266,32 +268,39 @@ const mountRoutes = () => {
     return;
   }
 
-  if (
-    !productsCollection ||
-    !usersCollection ||
-    !cartsCollection ||
-    !ordersCollection
-  ) {
-    throw new Error(
-      "Cannot mount routes because MongoDB collections are unavailable.",
-    );
+  if (!productsCollection) {
+    throw new Error("productsCollection is not available.");
   }
 
-  // ----------------------------------------------------------
+  if (!usersCollection) {
+    throw new Error("usersCollection is not available.");
+  }
+
+  if (!cartsCollection) {
+    throw new Error("cartsCollection is not available.");
+  }
+
+  if (!ordersCollection) {
+    throw new Error("ordersCollection is not available.");
+  }
+
+  console.log("Mounting application routes...");
+
+  // ==========================================================
   // AUTH
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use("/auth", authRoutes(usersCollection));
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // USERS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use("/users", usersRoutes(usersCollection));
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // PRODUCTS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/products",
@@ -304,18 +313,18 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // CARTS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/carts",
     cartsRoutes(cartsCollection, productsCollection, verifyToken),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // ORDERS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/orders",
@@ -329,9 +338,9 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // ADMIN
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/admin",
@@ -344,15 +353,15 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // INVOICE
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
 
   routesMounted = true;
 
-  console.log("Application routes mounted successfully.");
+  console.log("All application routes mounted.");
 };
 
 // ============================================================
@@ -362,7 +371,7 @@ const mountRoutes = () => {
 let initializationPromise = null;
 
 const initializeApplication = async () => {
-  if (routesMounted) {
+  if (routesMounted && db) {
     return;
   }
 
@@ -400,10 +409,11 @@ app.get("/", async (req, res) => {
       message: "Biscuit Shop API Running",
       environment: NODE_ENV,
       database: db ? "connected" : "disconnected",
+      routesMounted,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    console.error("GET / HEALTH CHECK ERROR:", error?.stack || error);
+    console.error("HEALTH CHECK ERROR:", error?.stack || error);
 
     return res.status(500).json({
       success: false,
@@ -413,14 +423,14 @@ app.get("/", async (req, res) => {
 });
 
 // ============================================================
-// INITIALIZATION MIDDLEWARE
+// API INITIALIZATION MIDDLEWARE
 // ============================================================
 
 app.use(async (req, res, next) => {
   try {
     await initializeApplication();
 
-    return next();
+    next();
   } catch (error) {
     console.error("REQUEST INITIALIZATION ERROR:", error?.stack || error);
 
@@ -439,6 +449,7 @@ app.use((req, res) => {
   return res.status(404).json({
     success: false,
     message: "API route not found.",
+    method: req.method,
     path: req.originalUrl,
   });
 });
