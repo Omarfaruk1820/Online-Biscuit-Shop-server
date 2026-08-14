@@ -2,6 +2,7 @@
   "name": "biscuit-shop-server",
   "version": "1.0.0",
   "description": "Biscuit Shop API",
+  "private": true,
   "main": "index.js",
   "type": "module",
   "scripts": {

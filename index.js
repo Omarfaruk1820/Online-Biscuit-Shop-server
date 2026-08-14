@@ -3,7 +3,6 @@ import "./config/env.js";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-
 import { MongoClient, ServerApiVersion } from "mongodb";
 
 import "./utils/firebaseAdmin.js";
@@ -32,14 +31,16 @@ app.disable("x-powered-by");
 // ENVIRONMENT
 // ============================================================
 
-const NODE_ENV = String(process.env.NODE_ENV || "development")
+const NODE_ENV = String(
+  process.env.NODE_ENV || process.env.VERCEL_ENV || "development",
+)
   .trim()
   .toLowerCase();
 
 const isProduction = NODE_ENV === "production";
 
 // ============================================================
-// ENVIRONMENT VALIDATION
+// REQUIRED ENVIRONMENT VARIABLES
 // ============================================================
 
 const requiredEnv = [
@@ -64,21 +65,36 @@ if (missingEnv.length > 0) {
 }
 
 // ============================================================
-// ENV VALUES
+// ENVIRONMENT VALUES
 // ============================================================
 
-const DB_USERNAME = process.env.DB_USERNAME.trim();
-const DB_PASS = process.env.DB_PASS;
-const DB_NAME = process.env.DB_NAME.trim();
+const DB_USERNAME = String(process.env.DB_USERNAME).trim();
 
-const CLIENT_URL = process.env.CLIENT_URL.trim();
-const CLIENT_URL_PROD = process.env.CLIENT_URL_PROD.trim();
+const DB_PASS = String(process.env.DB_PASS);
+
+const DB_NAME = String(process.env.DB_NAME).trim();
+
+const CLIENT_URL = String(process.env.CLIENT_URL).trim().replace(/\/+$/, "");
+
+const CLIENT_URL_PROD = String(process.env.CLIENT_URL_PROD)
+  .trim()
+  .replace(/\/+$/, "");
+
+// ============================================================
+// MONGODB URI
+// ============================================================
+
+const MONGO_URI =
+  String(process.env.MONGODB_URI || "").trim() ||
+  `mongodb+srv://${encodeURIComponent(DB_USERNAME)}:${encodeURIComponent(
+    DB_PASS,
+  )}@cluster0.g29mryf.mongodb.net/?retryWrites=true&w=majority`;
 
 // ============================================================
 // CORS
 // ============================================================
 
-const normalizeOrigin = (origin = "") => {
+const normalizeOrigin = (origin) => {
   if (typeof origin !== "string") {
     return "";
   }
@@ -86,40 +102,53 @@ const normalizeOrigin = (origin = "") => {
   return origin.trim().replace(/\/+$/, "");
 };
 
-const allowedOrigins = [CLIENT_URL, CLIENT_URL_PROD]
-  .map(normalizeOrigin)
-  .filter(Boolean);
+const allowedOrigins = new Set(
+  [
+    CLIENT_URL,
+    CLIENT_URL_PROD,
+    "http://localhost:5173",
+    "http://localhost:5174",
+  ]
+    .filter(Boolean)
+    .map(normalizeOrigin),
+);
 
-console.log("==========================================");
-console.log("Biscuit Shop API");
-console.log("Environment:", NODE_ENV);
-console.log("Allowed Origins:", allowedOrigins);
-console.log("==========================================");
+console.log("Allowed CORS origins:", [...allowedOrigins]);
 
 app.use(
   cors({
-    origin: (origin, callback) => {
-      // Server-to-server / browser without Origin
+    origin(origin, callback) {
+      // Requests without Origin:
+      // Postman, server-to-server requests, health checks, etc.
       if (!origin) {
         return callback(null, true);
       }
 
       const normalizedOrigin = normalizeOrigin(origin);
 
-      if (allowedOrigins.includes(normalizedOrigin)) {
+      if (allowedOrigins.has(normalizedOrigin)) {
         return callback(null, true);
       }
 
-      console.warn("CORS blocked:", origin);
+      console.warn(`CORS blocked request from origin: ${normalizedOrigin}`);
 
-      return callback(null, false);
+      const corsError = new Error("CORS_NOT_ALLOWED");
+
+      return callback(corsError);
     },
 
     credentials: true,
 
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+    ],
+
+    exposedHeaders: [],
 
     optionsSuccessStatus: 204,
   }),
@@ -145,19 +174,12 @@ app.use(
 app.use(cookieParser());
 
 // ============================================================
-// MONGODB
+// MONGODB OPTIONS
 // ============================================================
-
-const MONGO_URI =
-  `mongodb+srv://${encodeURIComponent(DB_USERNAME)}` +
-  `:${encodeURIComponent(DB_PASS)}` +
-  `@cluster0.g29mryf.mongodb.net/` +
-  `?retryWrites=true&w=majority`;
 
 const mongoOptions = {
   maxPoolSize: 10,
   minPoolSize: 0,
-
   maxIdleTimeMS: 30000,
 
   serverSelectionTimeoutMS: 10000,
@@ -225,10 +247,11 @@ const connectDB = async () => {
       ordersCollection = db.collection("orders");
 
       console.log("MongoDB connected successfully.");
+      console.log(`Database: ${DB_NAME}`);
 
       return db;
     } catch (error) {
-      console.error("MongoDB connection error:", error?.stack || error);
+      console.error("MongoDB connection failed:", error?.stack || error);
 
       db = null;
 
@@ -242,7 +265,7 @@ const connectDB = async () => {
           await client.close();
         } catch (closeError) {
           console.error(
-            "MongoDB cleanup error:",
+            "MongoDB close error:",
             closeError?.message || closeError,
           );
         }
@@ -268,39 +291,30 @@ const mountRoutes = () => {
     return;
   }
 
-  if (!productsCollection) {
-    throw new Error("productsCollection is not available.");
+  if (
+    !productsCollection ||
+    !usersCollection ||
+    !cartsCollection ||
+    !ordersCollection
+  ) {
+    throw new Error("MongoDB collections are not available.");
   }
 
-  if (!usersCollection) {
-    throw new Error("usersCollection is not available.");
-  }
-
-  if (!cartsCollection) {
-    throw new Error("cartsCollection is not available.");
-  }
-
-  if (!ordersCollection) {
-    throw new Error("ordersCollection is not available.");
-  }
-
-  console.log("Mounting application routes...");
-
-  // ==========================================================
+  // ----------------------------------------------------------
   // AUTH
-  // ==========================================================
+  // ----------------------------------------------------------
 
   app.use("/auth", authRoutes(usersCollection));
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // USERS
-  // ==========================================================
+  // ----------------------------------------------------------
 
   app.use("/users", usersRoutes(usersCollection));
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // PRODUCTS
-  // ==========================================================
+  // ----------------------------------------------------------
 
   app.use(
     "/products",
@@ -313,18 +327,18 @@ const mountRoutes = () => {
     ),
   );
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // CARTS
-  // ==========================================================
+  // ----------------------------------------------------------
 
   app.use(
     "/carts",
     cartsRoutes(cartsCollection, productsCollection, verifyToken),
   );
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // ORDERS
-  // ==========================================================
+  // ----------------------------------------------------------
 
   app.use(
     "/orders",
@@ -338,9 +352,9 @@ const mountRoutes = () => {
     ),
   );
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // ADMIN
-  // ==========================================================
+  // ----------------------------------------------------------
 
   app.use(
     "/admin",
@@ -353,9 +367,9 @@ const mountRoutes = () => {
     ),
   );
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // INVOICE
-  // ==========================================================
+  // ----------------------------------------------------------
 
   app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
 
@@ -365,13 +379,13 @@ const mountRoutes = () => {
 };
 
 // ============================================================
-// INITIALIZATION
+// APPLICATION INITIALIZATION
 // ============================================================
 
 let initializationPromise = null;
 
 const initializeApplication = async () => {
-  if (routesMounted && db) {
+  if (db && routesMounted) {
     return;
   }
 
@@ -415,28 +429,30 @@ app.get("/", async (req, res) => {
   } catch (error) {
     console.error("HEALTH CHECK ERROR:", error?.stack || error);
 
-    return res.status(500).json({
+    return res.status(503).json({
       success: false,
-      message: "Server initialization failed.",
+      message: "API is running but database initialization failed.",
+      database: "disconnected",
     });
   }
 });
 
 // ============================================================
-// API INITIALIZATION MIDDLEWARE
+// INITIALIZATION MIDDLEWARE
 // ============================================================
 
 app.use(async (req, res, next) => {
   try {
     await initializeApplication();
 
-    next();
+    return next();
   } catch (error) {
     console.error("REQUEST INITIALIZATION ERROR:", error?.stack || error);
 
-    return res.status(500).json({
+    return res.status(503).json({
       success: false,
       message: "Server initialization failed.",
+      database: "disconnected",
     });
   }
 });
@@ -449,7 +465,6 @@ app.use((req, res) => {
   return res.status(404).json({
     success: false,
     message: "API route not found.",
-    method: req.method,
     path: req.originalUrl,
   });
 });
@@ -461,41 +476,53 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error("GLOBAL SERVER ERROR:", err?.stack || err);
 
+  // ----------------------------------------------------------
+  // CORS ERROR
+  // ----------------------------------------------------------
+
+  if (err?.message === "CORS_NOT_ALLOWED") {
+    return res.status(403).json({
+      success: false,
+      message: "CORS policy blocked this request.",
+    });
+  }
+
+  // ----------------------------------------------------------
+  // STATUS CODE
+  // ----------------------------------------------------------
+
   const statusCode =
     Number.isInteger(err?.status) && err.status >= 400 && err.status < 600
       ? err.status
       : 500;
 
-  let message = "Internal Server Error.";
+  // ----------------------------------------------------------
+  // PRODUCTION ERROR
+  // ----------------------------------------------------------
 
-  if (!isProduction) {
-    message = err?.message || "Internal Server Error.";
-  } else {
-    switch (statusCode) {
-      case 400:
-        message = "Bad Request.";
-        break;
+  if (isProduction) {
+    const productionMessages = {
+      400: "Bad Request.",
+      401: "Unauthorized.",
+      403: "Forbidden.",
+      404: "Not Found.",
+      500: "Internal Server Error.",
+      503: "Service Unavailable.",
+    };
 
-      case 401:
-        message = "Unauthorized.";
-        break;
-
-      case 403:
-        message = "Forbidden.";
-        break;
-
-      case 404:
-        message = "Not Found.";
-        break;
-
-      default:
-        message = "Internal Server Error.";
-    }
+    return res.status(statusCode).json({
+      success: false,
+      message: productionMessages[statusCode] || "Internal Server Error.",
+    });
   }
+
+  // ----------------------------------------------------------
+  // DEVELOPMENT ERROR
+  // ----------------------------------------------------------
 
   return res.status(statusCode).json({
     success: false,
-    message,
+    message: err?.message || "Internal Server Error.",
   });
 });
 
