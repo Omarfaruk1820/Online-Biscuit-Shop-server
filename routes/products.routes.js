@@ -73,6 +73,7 @@ const productsRoutes = (
   // ============================================================
 
   router.get("/", async (req, res) => {
+    console.log("GET /products HIT");
     try {
       const parsedPage = Number.parseInt(req.query.page, 10);
 
