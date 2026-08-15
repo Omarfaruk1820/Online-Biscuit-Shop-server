@@ -40,6 +40,7 @@ const productsRoutes = (
   verifyUser,
   verifyAdmin,
 ) => {
+   console.log("Products Routes Loaded");
   const router = express.Router();
 
   // ============================================================
