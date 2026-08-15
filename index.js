@@ -94,7 +94,7 @@ const MONGO_URI =
 // CORS
 // ============================================================
 
-const normalizeOrigin = (origin) => {
+const normalizeOrigin = (origin = "") => {
   if (typeof origin !== "string") {
     return "";
   }
@@ -118,8 +118,8 @@ console.log("Allowed CORS origins:", [...allowedOrigins]);
 app.use(
   cors({
     origin(origin, callback) {
-      // Requests without Origin:
-      // Postman, server-to-server requests, health checks, etc.
+      // Requests without Origin
+      // Example: Postman/server-to-server
       if (!origin) {
         return callback(null, true);
       }
@@ -132,9 +132,9 @@ app.use(
 
       console.warn(`CORS blocked request from origin: ${normalizedOrigin}`);
 
-      const corsError = new Error("CORS_NOT_ALLOWED");
+      const error = new Error("CORS_NOT_ALLOWED");
 
-      return callback(corsError);
+      return callback(error);
     },
 
     credentials: true,
@@ -147,8 +147,6 @@ app.use(
       "X-Requested-With",
       "Accept",
     ],
-
-    exposedHeaders: [],
 
     optionsSuccessStatus: 204,
   }),
@@ -213,12 +211,10 @@ let routesMounted = false;
 // ============================================================
 
 const connectDB = async () => {
-  // Already connected
   if (db) {
     return db;
   }
 
-  // Connection already running
   if (connectionPromise) {
     return connectionPromise;
   }
@@ -300,21 +296,21 @@ const mountRoutes = () => {
     throw new Error("MongoDB collections are not available.");
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // AUTH
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use("/auth", authRoutes(usersCollection));
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // USERS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use("/users", usersRoutes(usersCollection));
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // PRODUCTS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/products",
@@ -327,18 +323,18 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // CARTS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/carts",
     cartsRoutes(cartsCollection, productsCollection, verifyToken),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // ORDERS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/orders",
@@ -352,9 +348,9 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // ADMIN
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/admin",
@@ -367,9 +363,9 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // INVOICE
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
 
@@ -379,82 +375,18 @@ const mountRoutes = () => {
 };
 
 // ============================================================
-// APPLICATION INITIALIZATION
-// ============================================================
-
-let initializationPromise = null;
-
-const initializeApplication = async () => {
-  if (db && routesMounted) {
-    return;
-  }
-
-  if (initializationPromise) {
-    return initializationPromise;
-  }
-
-  initializationPromise = (async () => {
-    try {
-      await connectDB();
-
-      mountRoutes();
-    } catch (error) {
-      console.error("APPLICATION INITIALIZATION ERROR:", error?.stack || error);
-
-      throw error;
-    } finally {
-      initializationPromise = null;
-    }
-  })();
-
-  return initializationPromise;
-};
-
-// ============================================================
 // HEALTH CHECK
 // ============================================================
 
 app.get("/", async (req, res) => {
-  try {
-    await initializeApplication();
-
-    return res.status(200).json({
-      success: true,
-      message: "Biscuit Shop API Running",
-      environment: NODE_ENV,
-      database: db ? "connected" : "disconnected",
-      routesMounted,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("HEALTH CHECK ERROR:", error?.stack || error);
-
-    return res.status(503).json({
-      success: false,
-      message: "API is running but database initialization failed.",
-      database: "disconnected",
-    });
-  }
-});
-
-// ============================================================
-// INITIALIZATION MIDDLEWARE
-// ============================================================
-
-app.use(async (req, res, next) => {
-  try {
-    await initializeApplication();
-
-    return next();
-  } catch (error) {
-    console.error("REQUEST INITIALIZATION ERROR:", error?.stack || error);
-
-    return res.status(503).json({
-      success: false,
-      message: "Server initialization failed.",
-      database: "disconnected",
-    });
-  }
+  return res.status(200).json({
+    success: true,
+    message: "Biscuit Shop API Running",
+    environment: NODE_ENV,
+    database: db ? "connected" : "disconnected",
+    routesMounted,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ============================================================
@@ -488,7 +420,7 @@ app.use((err, req, res, next) => {
   }
 
   // ----------------------------------------------------------
-  // STATUS CODE
+  // STATUS
   // ----------------------------------------------------------
 
   const statusCode =
@@ -497,7 +429,7 @@ app.use((err, req, res, next) => {
       : 500;
 
   // ----------------------------------------------------------
-  // PRODUCTION ERROR
+  // PRODUCTION
   // ----------------------------------------------------------
 
   if (isProduction) {
@@ -517,7 +449,7 @@ app.use((err, req, res, next) => {
   }
 
   // ----------------------------------------------------------
-  // DEVELOPMENT ERROR
+  // DEVELOPMENT
   // ----------------------------------------------------------
 
   return res.status(statusCode).json({
@@ -525,6 +457,27 @@ app.use((err, req, res, next) => {
     message: err?.message || "Internal Server Error.",
   });
 });
+
+// ============================================================
+// INITIALIZE APPLICATION BEFORE EXPORT
+// ============================================================
+//
+// IMPORTANT:
+// MongoDB connection and route registration happen BEFORE
+// requests reach the 404 handler.
+//
+// This fixes:
+// GET /products
+// GET /products?page=1&limit=8
+// GET /products/:id
+//
+// ============================================================
+
+await connectDB();
+
+mountRoutes();
+
+console.log("Application initialization completed.");
 
 // ============================================================
 // EXPORTS
