@@ -7,12 +7,20 @@ const requiredEnvVariables = [
   "DB_USERNAME",
   "DB_PASS",
   "JWT_SECRET",
+  "CLIENT_URL",
+  "CLIENT_URL_PROD",
 ];
 
-for (const variable of requiredEnvVariables) {
-  if (!process.env[variable]?.trim()) {
-    throw new Error(`${variable} is missing from environment variables.`);
-  }
+const missingEnvVariables = requiredEnvVariables.filter((variable) => {
+  const value = process.env[variable];
+
+  return typeof value !== "string" || !value.trim();
+});
+
+if (missingEnvVariables.length > 0) {
+  throw new Error(
+    `Missing required environment variables: ${missingEnvVariables.join(", ")}`,
+  );
 }
 
 export default process.env;

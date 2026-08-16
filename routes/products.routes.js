@@ -6,13 +6,15 @@ import { ObjectId } from "mongodb";
 // ============================================================
 
 const normalizeString = (value = "") => {
-  return typeof value === "string" ? value.trim() : String(value).trim();
+  if (typeof value !== "string") {
+    return String(value ?? "").trim();
+  }
+
+  return value.trim();
 };
 
 const normalizeEmail = (value = "") => {
-  return typeof value === "string"
-    ? value.trim().toLowerCase()
-    : String(value).trim().toLowerCase();
+  return normalizeString(value).toLowerCase();
 };
 
 const normalizeCategory = (value = "") => {
@@ -48,8 +50,6 @@ const productsRoutes = (
   verifyUser,
   verifyAdmin,
 ) => {
-  console.log("Products Routes Loaded");
-
   const router = express.Router();
 
   // ==========================================================
@@ -57,39 +57,37 @@ const productsRoutes = (
   // ==========================================================
 
   if (!productsCollection) {
-    throw new Error("productsCollection is required in productsRoutes.");
+    throw new Error("productsCollection is required.");
   }
 
   if (!usersCollection) {
-    throw new Error("usersCollection is required in productsRoutes.");
+    throw new Error("usersCollection is required.");
   }
 
   if (typeof verifyToken !== "function") {
-    throw new Error("verifyToken middleware is required in productsRoutes.");
+    throw new Error("verifyToken middleware is required.");
   }
 
   if (typeof verifyUser !== "function") {
-    throw new Error("verifyUser middleware is required in productsRoutes.");
+    throw new Error("verifyUser middleware is required.");
   }
 
   if (typeof verifyAdmin !== "function") {
-    throw new Error("verifyAdmin middleware is required in productsRoutes.");
+    throw new Error("verifyAdmin middleware is required.");
   }
 
   // ==========================================================
   // GET ALL PRODUCTS
   // GET /products
-  // GET /products?page=1&limit=8
-  // GET /products?search=chips
-  // GET /products?category=cookies
   // ==========================================================
 
   router.get("/", async (req, res) => {
     try {
-      console.log("GET /products");
+      // --------------------------------------------------------
+      // PAGINATION
+      // --------------------------------------------------------
 
       const parsedPage = Number.parseInt(req.query.page, 10);
-
       const parsedLimit = Number.parseInt(req.query.limit, 10);
 
       const page =
@@ -102,6 +100,10 @@ const productsRoutes = (
 
       const skip = (page - 1) * limit;
 
+      // --------------------------------------------------------
+      // FILTERS
+      // --------------------------------------------------------
+
       const search =
         typeof req.query.search === "string" ? req.query.search.trim() : "";
 
@@ -112,10 +114,7 @@ const productsRoutes = (
 
       const query = {};
 
-      // --------------------------------------------------------
-      // SEARCH
-      // --------------------------------------------------------
-
+      // Search by product name
       if (search) {
         query.name = {
           $regex: escapeRegex(search),
@@ -123,24 +122,19 @@ const productsRoutes = (
         };
       }
 
-      // --------------------------------------------------------
-      // CATEGORY
-      // --------------------------------------------------------
-
+      // Filter by category
       if (category) {
         query.category = category;
       }
 
       // --------------------------------------------------------
-      // DATABASE
+      // DATABASE QUERY
       // --------------------------------------------------------
 
       const [products, total] = await Promise.all([
         productsCollection
           .find(query)
-          .sort({
-            _id: -1,
-          })
+          .sort({ _id: -1 })
           .skip(skip)
           .limit(limit)
           .toArray(),
@@ -148,25 +142,34 @@ const productsRoutes = (
         productsCollection.countDocuments(query),
       ]);
 
+      // --------------------------------------------------------
+      // PAGINATION
+      // --------------------------------------------------------
+
       const totalPages = total > 0 ? Math.ceil(total / limit) : 0;
+
+      const hasNextPage = totalPages > 0 && page < totalPages;
+
+      const hasPrevPage = page > 1;
+
+      // --------------------------------------------------------
+      // RESPONSE
+      // --------------------------------------------------------
 
       return res.status(200).json({
         success: true,
         data: products,
-
         pagination: {
           page,
           limit,
           total,
           totalPages,
-
-          hasNextPage: totalPages > 0 && page < totalPages,
-
-          hasPrevPage: page > 1,
+          hasNextPage,
+          hasPrevPage,
         },
       });
     } catch (error) {
-      console.error("GET /products ERROR:", error?.stack || error);
+      console.error("GET /products error:", error?.stack || error);
 
       return res.status(500).json({
         success: false,
@@ -184,12 +187,20 @@ const productsRoutes = (
     try {
       const { id } = req.params;
 
+      // --------------------------------------------------------
+      // VALIDATE ID
+      // --------------------------------------------------------
+
       if (!ObjectId.isValid(id)) {
         return res.status(400).json({
           success: false,
           message: "Invalid product ID.",
         });
       }
+
+      // --------------------------------------------------------
+      // FIND PRODUCT
+      // --------------------------------------------------------
 
       const product = await productsCollection.findOne({
         _id: new ObjectId(id),
@@ -202,12 +213,16 @@ const productsRoutes = (
         });
       }
 
+      // --------------------------------------------------------
+      // RESPONSE
+      // --------------------------------------------------------
+
       return res.status(200).json({
         success: true,
         data: product,
       });
     } catch (error) {
-      console.error("GET /products/:id ERROR:", error?.stack || error);
+      console.error("GET /products/:id error:", error?.stack || error);
 
       return res.status(500).json({
         success: false,
@@ -219,6 +234,7 @@ const productsRoutes = (
   // ==========================================================
   // CREATE PRODUCT
   // POST /products
+  // ADMIN ONLY
   // ==========================================================
 
   router.post(
@@ -345,10 +361,14 @@ const productsRoutes = (
         const productCategory = normalizeCategory(category) || "cookies";
 
         // ------------------------------------------------------
-        // PRODUCT DOCUMENT
+        // DATE
         // ------------------------------------------------------
 
         const now = new Date();
+
+        // ------------------------------------------------------
+        // PRODUCT DOCUMENT
+        // ------------------------------------------------------
 
         const newProduct = {
           name: productName,
@@ -390,17 +410,20 @@ const productsRoutes = (
 
         const result = await productsCollection.insertOne(newProduct);
 
+        // ------------------------------------------------------
+        // RESPONSE
+        // ------------------------------------------------------
+
         return res.status(201).json({
           success: true,
           message: "Product created successfully.",
-
           data: {
             _id: result.insertedId,
             ...newProduct,
           },
         });
       } catch (error) {
-        console.error("POST /products ERROR:", error?.stack || error);
+        console.error("POST /products error:", error?.stack || error);
 
         return res.status(500).json({
           success: false,
@@ -413,6 +436,7 @@ const productsRoutes = (
   // ==========================================================
   // UPDATE PRODUCT
   // PATCH /products/:id
+  // ADMIN ONLY
   // ==========================================================
 
   router.patch(
@@ -424,12 +448,20 @@ const productsRoutes = (
       try {
         const { id } = req.params;
 
+        // ------------------------------------------------------
+        // VALIDATE ID
+        // ------------------------------------------------------
+
         if (!ObjectId.isValid(id)) {
           return res.status(400).json({
             success: false,
             message: "Invalid product ID.",
           });
         }
+
+        // ------------------------------------------------------
+        // ALLOWED FIELDS
+        // ------------------------------------------------------
 
         const allowedFields = [
           "name",
@@ -448,10 +480,6 @@ const productsRoutes = (
         ];
 
         const updates = {};
-
-        // ------------------------------------------------------
-        // PICK ALLOWED FIELDS
-        // ------------------------------------------------------
 
         for (const field of allowedFields) {
           if (req.body?.[field] !== undefined) {
@@ -598,20 +626,22 @@ const productsRoutes = (
         // TEXT FIELDS
         // ------------------------------------------------------
 
-        for (const field of [
+        const textFields = [
           "brand",
           "weight",
           "description",
           "ingredients",
           "expiry",
-        ]) {
+        ];
+
+        for (const field of textFields) {
           if (updates[field] !== undefined) {
             updates[field] = normalizeString(updates[field]);
           }
         }
 
         // ------------------------------------------------------
-        // NO UPDATE
+        // CHECK UPDATE
         // ------------------------------------------------------
 
         if (Object.keys(updates).length === 0) {
@@ -643,13 +673,17 @@ const productsRoutes = (
           });
         }
 
+        // ------------------------------------------------------
+        // RESPONSE
+        // ------------------------------------------------------
+
         return res.status(200).json({
           success: true,
           message: "Product updated successfully.",
           modifiedCount: result.modifiedCount,
         });
       } catch (error) {
-        console.error("PATCH /products/:id ERROR:", error?.stack || error);
+        console.error("PATCH /products/:id error:", error?.stack || error);
 
         return res.status(500).json({
           success: false,
@@ -662,6 +696,7 @@ const productsRoutes = (
   // ==========================================================
   // DELETE PRODUCT
   // DELETE /products/:id
+  // ADMIN ONLY
   // ==========================================================
 
   router.delete(
@@ -673,12 +708,20 @@ const productsRoutes = (
       try {
         const { id } = req.params;
 
+        // ------------------------------------------------------
+        // VALIDATE ID
+        // ------------------------------------------------------
+
         if (!ObjectId.isValid(id)) {
           return res.status(400).json({
             success: false,
             message: "Invalid product ID.",
           });
         }
+
+        // ------------------------------------------------------
+        // DELETE
+        // ------------------------------------------------------
 
         const result = await productsCollection.deleteOne({
           _id: new ObjectId(id),
@@ -691,12 +734,16 @@ const productsRoutes = (
           });
         }
 
+        // ------------------------------------------------------
+        // RESPONSE
+        // ------------------------------------------------------
+
         return res.status(200).json({
           success: true,
           message: "Product deleted successfully.",
         });
       } catch (error) {
-        console.error("DELETE /products/:id ERROR:", error?.stack || error);
+        console.error("DELETE /products/:id error:", error?.stack || error);
 
         return res.status(500).json({
           success: false,
