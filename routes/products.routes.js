@@ -1,6 +1,10 @@
 import express from "express";
 import { ObjectId } from "mongodb";
 
+// ============================================================
+// HELPERS
+// ============================================================
+
 const normalizeString = (value = "") => {
   return typeof value === "string" ? value.trim() : String(value).trim();
 };
@@ -9,6 +13,10 @@ const normalizeEmail = (value = "") => {
   return typeof value === "string"
     ? value.trim().toLowerCase()
     : String(value).trim().toLowerCase();
+};
+
+const normalizeCategory = (value = "") => {
+  return normalizeString(value).toLowerCase();
 };
 
 const escapeRegex = (value = "") => {
@@ -29,9 +37,9 @@ const toNumber = (value, fallback = 0) => {
   return Number.isFinite(number) ? number : fallback;
 };
 
-const normalizeCategory = (value = "") => {
-  return normalizeString(value).toLowerCase();
-};
+// ============================================================
+// PRODUCTS ROUTES
+// ============================================================
 
 const productsRoutes = (
   productsCollection,
@@ -41,11 +49,12 @@ const productsRoutes = (
   verifyAdmin,
 ) => {
   console.log("Products Routes Loaded");
+
   const router = express.Router();
 
-  // ============================================================
+  // ==========================================================
   // DEPENDENCY VALIDATION
-  // ============================================================
+  // ==========================================================
 
   if (!productsCollection) {
     throw new Error("productsCollection is required in productsRoutes.");
@@ -67,17 +76,18 @@ const productsRoutes = (
     throw new Error("verifyAdmin middleware is required in productsRoutes.");
   }
 
-  // ============================================================
+  // ==========================================================
   // GET ALL PRODUCTS
-  // GET /products?page=1&limit=8&search=&category=
-  // ============================================================
+  // GET /products
+  // GET /products?page=1&limit=8
+  // GET /products?search=chips
+  // GET /products?category=cookies
+  // ==========================================================
 
   router.get("/", async (req, res) => {
-    console.log("=================================");
-    console.log("GET /products ROUTE HIT");
-    console.log("Query:", req.query);
-    console.log("=================================");
     try {
+      console.log("GET /products");
+
       const parsedPage = Number.parseInt(req.query.page, 10);
 
       const parsedLimit = Number.parseInt(req.query.limit, 10);
@@ -102,9 +112,9 @@ const productsRoutes = (
 
       const query = {};
 
-      // ----------------------------------------------------------
+      // --------------------------------------------------------
       // SEARCH
-      // ----------------------------------------------------------
+      // --------------------------------------------------------
 
       if (search) {
         query.name = {
@@ -113,17 +123,17 @@ const productsRoutes = (
         };
       }
 
-      // ----------------------------------------------------------
+      // --------------------------------------------------------
       // CATEGORY
-      // ----------------------------------------------------------
+      // --------------------------------------------------------
 
       if (category) {
         query.category = category;
       }
 
-      // ----------------------------------------------------------
-      // DATABASE QUERY
-      // ----------------------------------------------------------
+      // --------------------------------------------------------
+      // DATABASE
+      // --------------------------------------------------------
 
       const [products, total] = await Promise.all([
         productsCollection
@@ -138,7 +148,7 @@ const productsRoutes = (
         productsCollection.countDocuments(query),
       ]);
 
-      const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+      const totalPages = total > 0 ? Math.ceil(total / limit) : 0;
 
       return res.status(200).json({
         success: true,
@@ -164,6 +174,11 @@ const productsRoutes = (
       });
     }
   });
+
+  // ==========================================================
+  // GET SINGLE PRODUCT
+  // GET /products/:id
+  // ==========================================================
 
   router.get("/:id", async (req, res) => {
     try {
@@ -200,6 +215,11 @@ const productsRoutes = (
       });
     }
   });
+
+  // ==========================================================
+  // CREATE PRODUCT
+  // POST /products
+  // ==========================================================
 
   router.post(
     "/",
@@ -325,7 +345,7 @@ const productsRoutes = (
         const productCategory = normalizeCategory(category) || "cookies";
 
         // ------------------------------------------------------
-        // CREATE PRODUCT
+        // PRODUCT DOCUMENT
         // ------------------------------------------------------
 
         const now = new Date();
@@ -372,7 +392,6 @@ const productsRoutes = (
 
         return res.status(201).json({
           success: true,
-
           message: "Product created successfully.",
 
           data: {
@@ -390,6 +409,11 @@ const productsRoutes = (
       }
     },
   );
+
+  // ==========================================================
+  // UPDATE PRODUCT
+  // PATCH /products/:id
+  // ==========================================================
 
   router.patch(
     "/:id",
@@ -426,7 +450,7 @@ const productsRoutes = (
         const updates = {};
 
         // ------------------------------------------------------
-        // PICK ALLOWED FIELDS ONLY
+        // PICK ALLOWED FIELDS
         // ------------------------------------------------------
 
         for (const field of allowedFields) {
@@ -587,7 +611,7 @@ const productsRoutes = (
         }
 
         // ------------------------------------------------------
-        // NO UPDATE FIELDS
+        // NO UPDATE
         // ------------------------------------------------------
 
         if (Object.keys(updates).length === 0) {
@@ -597,14 +621,10 @@ const productsRoutes = (
           });
         }
 
-        // ------------------------------------------------------
-        // UPDATED TIME
-        // ------------------------------------------------------
-
         updates.updatedAt = new Date();
 
         // ------------------------------------------------------
-        // UPDATE
+        // UPDATE DATABASE
         // ------------------------------------------------------
 
         const result = await productsCollection.updateOne(
@@ -639,10 +659,10 @@ const productsRoutes = (
     },
   );
 
-  // ============================================================
+  // ==========================================================
   // DELETE PRODUCT
   // DELETE /products/:id
-  // ============================================================
+  // ==========================================================
 
   router.delete(
     "/:id",

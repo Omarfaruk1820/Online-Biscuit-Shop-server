@@ -19,10 +19,6 @@ import verifyToken from "../middleware/verifyToken.js";
 import verifyUser from "../middleware/verifyUser.js";
 import verifyAdmin from "../middleware/verifyAdmin.js";
 
-// ============================================================
-// EXPRESS APP
-// ============================================================
-
 const app = express();
 
 app.disable("x-powered-by");
@@ -118,8 +114,6 @@ console.log("Allowed CORS origins:", [...allowedOrigins]);
 app.use(
   cors({
     origin(origin, callback) {
-      // Requests without Origin:
-      // Postman, server-to-server, direct requests, etc.
       if (!origin) {
         return callback(null, true);
       }
@@ -132,9 +126,7 @@ app.use(
 
       console.warn(`CORS blocked request from origin: ${normalizedOrigin}`);
 
-      const error = new Error("CORS_NOT_ALLOWED");
-
-      return callback(error);
+      return callback(new Error("CORS_NOT_ALLOWED"));
     },
 
     credentials: true,
@@ -172,7 +164,7 @@ app.use(
 app.use(cookieParser());
 
 // ============================================================
-// MONGODB OPTIONS
+// MONGODB
 // ============================================================
 
 const mongoOptions = {
@@ -191,10 +183,6 @@ const mongoOptions = {
   },
 };
 
-// ============================================================
-// DATABASE STATE
-// ============================================================
-
 let client = null;
 let db = null;
 
@@ -211,12 +199,10 @@ let routesMounted = false;
 // ============================================================
 
 const connectDB = async () => {
-  // Already connected
   if (db) {
     return db;
   }
 
-  // Connection already in progress
   if (connectionPromise) {
     return connectionPromise;
   }
@@ -298,21 +284,9 @@ const mountRoutes = () => {
     throw new Error("MongoDB collections are unavailable.");
   }
 
-  // ----------------------------------------------------------
-  // AUTH
-  // ----------------------------------------------------------
-
   app.use("/auth", authRoutes(usersCollection));
 
-  // ----------------------------------------------------------
-  // USERS
-  // ----------------------------------------------------------
-
   app.use("/users", usersRoutes(usersCollection));
-
-  // ----------------------------------------------------------
-  // PRODUCTS
-  // ----------------------------------------------------------
 
   app.use(
     "/products",
@@ -325,18 +299,10 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
-  // CARTS
-  // ----------------------------------------------------------
-
   app.use(
     "/carts",
     cartsRoutes(cartsCollection, productsCollection, verifyToken),
   );
-
-  // ----------------------------------------------------------
-  // ORDERS
-  // ----------------------------------------------------------
 
   app.use(
     "/orders",
@@ -350,10 +316,6 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
-  // ADMIN
-  // ----------------------------------------------------------
-
   app.use(
     "/admin",
     adminRoutes(
@@ -365,10 +327,6 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
-  // INVOICE
-  // ----------------------------------------------------------
-
   app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
 
   routesMounted = true;
@@ -377,20 +335,31 @@ const mountRoutes = () => {
 };
 
 // ============================================================
-// INITIALIZE DATABASE + ROUTES
+// INITIALIZATION MIDDLEWARE
 // ============================================================
 
-const initializeApplication = async () => {
-  await connectDB();
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
 
-  mountRoutes();
-};
+    mountRoutes();
+
+    next();
+  } catch (error) {
+    console.error("APPLICATION INITIALIZATION ERROR:", error?.stack || error);
+
+    return res.status(503).json({
+      success: false,
+      message: "Service temporarily unavailable.",
+    });
+  }
+});
 
 // ============================================================
-// ROOT HEALTH CHECK
+// ROOT
 // ============================================================
 
-app.get("/", async (req, res) => {
+app.get("/", (req, res) => {
   return res.status(200).json({
     success: true,
     message: "Biscuit Shop API Running",
@@ -426,7 +395,7 @@ app.get("/api-status", (req, res) => {
 });
 
 // ============================================================
-// 404 HANDLER
+// 404
 // ============================================================
 
 app.use((req, res) => {
@@ -479,10 +448,12 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// INITIALIZE APPLICATION
+// INITIAL CONNECTION
 // ============================================================
 
-await initializeApplication();
+await connectDB();
+
+mountRoutes();
 
 // ============================================================
 // EXPORT
