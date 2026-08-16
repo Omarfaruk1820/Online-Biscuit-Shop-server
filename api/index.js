@@ -1,23 +1,23 @@
-import "./config/env.js";
+import "../config/env.js";
 
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { MongoClient, ServerApiVersion } from "mongodb";
 
-import "./utils/firebaseAdmin.js";
+import "../utils/firebaseAdmin.js";
 
-import authRoutes from "./routes/auth.routes.js";
-import usersRoutes from "./routes/users.routes.js";
-import productsRoutes from "./routes/products.routes.js";
-import cartsRoutes from "./routes/carts.routes.js";
-import ordersRoutes from "./routes/orders.routes.js";
-import invoiceRoutes from "./routes/invoice.routes.js";
-import adminRoutes from "./routes/admin.routes.js";
+import authRoutes from "../routes/auth.routes.js";
+import usersRoutes from "../routes/users.routes.js";
+import productsRoutes from "../routes/products.routes.js";
+import cartsRoutes from "../routes/carts.routes.js";
+import ordersRoutes from "../routes/orders.routes.js";
+import invoiceRoutes from "../routes/invoice.routes.js";
+import adminRoutes from "../routes/admin.routes.js";
 
-import verifyToken from "./middleware/verifyToken.js";
-import verifyUser from "./middleware/verifyUser.js";
-import verifyAdmin from "./middleware/verifyAdmin.js";
+import verifyToken from "../middleware/verifyToken.js";
+import verifyUser from "../middleware/verifyUser.js";
+import verifyAdmin from "../middleware/verifyAdmin.js";
 
 // ============================================================
 // EXPRESS APP
@@ -119,7 +119,7 @@ app.use(
   cors({
     origin(origin, callback) {
       // Requests without Origin:
-      // Postman, server-to-server, direct browser requests, etc.
+      // Postman, server-to-server, direct requests, etc.
       if (!origin) {
         return callback(null, true);
       }
@@ -207,22 +207,6 @@ let connectionPromise = null;
 let routesMounted = false;
 
 // ============================================================
-// IMPORTANT
-// ============================================================
-//
-// This router is mounted BEFORE the 404 handler.
-//
-// We will add /auth, /products, /carts, etc.
-// INSIDE this router after MongoDB connects.
-//
-// This prevents the dynamic-route-after-404 problem.
-// ============================================================
-
-const apiRouter = express.Router();
-
-app.use(apiRouter);
-
-// ============================================================
 // CONNECT DATABASE
 // ============================================================
 
@@ -232,7 +216,7 @@ const connectDB = async () => {
     return db;
   }
 
-  // Connection already running
+  // Connection already in progress
   if (connectionPromise) {
     return connectionPromise;
   }
@@ -256,15 +240,11 @@ const connectDB = async () => {
       db = database;
 
       productsCollection = db.collection("products");
-
       usersCollection = db.collection("users");
-
       cartsCollection = db.collection("carts");
-
       ordersCollection = db.collection("orders");
 
       console.log("MongoDB connected successfully.");
-
       console.log(`Database: ${DB_NAME}`);
 
       return db;
@@ -301,7 +281,7 @@ const connectDB = async () => {
 };
 
 // ============================================================
-// MOUNT APPLICATION ROUTES
+// MOUNT ROUTES
 // ============================================================
 
 const mountRoutes = () => {
@@ -318,23 +298,23 @@ const mountRoutes = () => {
     throw new Error("MongoDB collections are unavailable.");
   }
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // AUTH
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  apiRouter.use("/auth", authRoutes(usersCollection));
+  app.use("/auth", authRoutes(usersCollection));
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // USERS
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  apiRouter.use("/users", usersRoutes(usersCollection));
+  app.use("/users", usersRoutes(usersCollection));
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // PRODUCTS
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  apiRouter.use(
+  app.use(
     "/products",
     productsRoutes(
       productsCollection,
@@ -345,20 +325,20 @@ const mountRoutes = () => {
     ),
   );
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // CARTS
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  apiRouter.use(
+  app.use(
     "/carts",
     cartsRoutes(cartsCollection, productsCollection, verifyToken),
   );
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // ORDERS
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  apiRouter.use(
+  app.use(
     "/orders",
     ordersRoutes(
       client,
@@ -370,11 +350,11 @@ const mountRoutes = () => {
     ),
   );
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // ADMIN
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  apiRouter.use(
+  app.use(
     "/admin",
     adminRoutes(
       usersCollection,
@@ -385,11 +365,11 @@ const mountRoutes = () => {
     ),
   );
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // INVOICE
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  apiRouter.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
+  app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
 
   routesMounted = true;
 
@@ -399,32 +379,12 @@ const mountRoutes = () => {
 // ============================================================
 // INITIALIZE DATABASE + ROUTES
 // ============================================================
-//
-// IMPORTANT:
-//
-// We initialize before every request if necessary,
-// but routes themselves live inside apiRouter.
-//
-// apiRouter was registered BEFORE the 404 handler.
-//
-// ============================================================
 
-app.use(async (req, res, next) => {
-  try {
-    await connectDB();
+const initializeApplication = async () => {
+  await connectDB();
 
-    mountRoutes();
-
-    return next();
-  } catch (error) {
-    console.error("APPLICATION INITIALIZATION ERROR:", error?.stack || error);
-
-    return res.status(503).json({
-      success: false,
-      message: "Service temporarily unavailable.",
-    });
-  }
-});
+  mountRoutes();
+};
 
 // ============================================================
 // ROOT HEALTH CHECK
@@ -452,6 +412,7 @@ app.get("/api-status", (req, res) => {
     environment: NODE_ENV,
     database: db ? "connected" : "disconnected",
     routesMounted,
+
     routes: [
       "/auth",
       "/users",
@@ -483,10 +444,6 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error("GLOBAL SERVER ERROR:", err?.stack || err);
 
-  // ----------------------------------------------------------
-  // CORS ERROR
-  // ----------------------------------------------------------
-
   if (err?.message === "CORS_NOT_ALLOWED") {
     return res.status(403).json({
       success: false,
@@ -494,18 +451,10 @@ app.use((err, req, res, next) => {
     });
   }
 
-  // ----------------------------------------------------------
-  // STATUS CODE
-  // ----------------------------------------------------------
-
   const statusCode =
     Number.isInteger(err?.status) && err.status >= 400 && err.status < 600
       ? err.status
       : 500;
-
-  // ----------------------------------------------------------
-  // PRODUCTION RESPONSE
-  // ----------------------------------------------------------
 
   if (isProduction) {
     const productionMessages = {
@@ -523,10 +472,6 @@ app.use((err, req, res, next) => {
     });
   }
 
-  // ----------------------------------------------------------
-  // DEVELOPMENT RESPONSE
-  // ----------------------------------------------------------
-
   return res.status(statusCode).json({
     success: false,
     message: err?.message || "Internal Server Error.",
@@ -534,23 +479,10 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// INITIAL DATABASE CONNECTION
-// ============================================================
-//
-// This happens once when the Vercel function instance
-// initializes.
-//
+// INITIALIZE APPLICATION
 // ============================================================
 
-try {
-  await connectDB();
-
-  mountRoutes();
-} catch (error) {
-  console.error("INITIAL APPLICATION STARTUP FAILED:", error?.stack || error);
-
-  throw error;
-}
+await initializeApplication();
 
 // ============================================================
 // EXPORT
