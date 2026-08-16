@@ -118,8 +118,8 @@ console.log("Allowed CORS origins:", [...allowedOrigins]);
 app.use(
   cors({
     origin(origin, callback) {
-      // Requests without Origin
-      // Example: Postman/server-to-server
+      // Requests without Origin:
+      // Postman, server-to-server, direct browser navigation, etc.
       if (!origin) {
         return callback(null, true);
       }
@@ -211,10 +211,12 @@ let routesMounted = false;
 // ============================================================
 
 const connectDB = async () => {
+  // Already connected
   if (db) {
     return db;
   }
 
+  // Connection already in progress
   if (connectionPromise) {
     return connectionPromise;
   }
@@ -293,7 +295,9 @@ const mountRoutes = () => {
     !cartsCollection ||
     !ordersCollection
   ) {
-    throw new Error("MongoDB collections are not available.");
+    throw new Error(
+      "Cannot mount routes because MongoDB collections are unavailable.",
+    );
   }
 
   // ==========================================================
@@ -375,6 +379,34 @@ const mountRoutes = () => {
 };
 
 // ============================================================
+// INITIALIZATION MIDDLEWARE
+// ============================================================
+//
+// IMPORTANT:
+//
+// We initialize MongoDB before processing application routes.
+// This avoids relying on top-level await during Vercel startup.
+//
+// ============================================================
+
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+
+    mountRoutes();
+
+    return next();
+  } catch (error) {
+    console.error("APPLICATION INITIALIZATION ERROR:", error?.stack || error);
+
+    return res.status(503).json({
+      success: false,
+      message: "Service temporarily unavailable.",
+    });
+  }
+});
+
+// ============================================================
 // HEALTH CHECK
 // ============================================================
 
@@ -386,6 +418,28 @@ app.get("/", async (req, res) => {
     database: db ? "connected" : "disconnected",
     routesMounted,
     timestamp: new Date().toISOString(),
+  });
+});
+
+// ============================================================
+// API DEBUG ROUTE
+// ============================================================
+
+app.get("/api-status", (req, res) => {
+  return res.status(200).json({
+    success: true,
+    message: "API is working.",
+    database: db ? "connected" : "disconnected",
+    routesMounted,
+    routes: [
+      "/auth",
+      "/users",
+      "/products",
+      "/carts",
+      "/orders",
+      "/admin",
+      "/invoice",
+    ],
   });
 });
 
@@ -409,7 +463,7 @@ app.use((err, req, res, next) => {
   console.error("GLOBAL SERVER ERROR:", err?.stack || err);
 
   // ----------------------------------------------------------
-  // CORS ERROR
+  // CORS
   // ----------------------------------------------------------
 
   if (err?.message === "CORS_NOT_ALLOWED") {
@@ -457,27 +511,6 @@ app.use((err, req, res, next) => {
     message: err?.message || "Internal Server Error.",
   });
 });
-
-// ============================================================
-// INITIALIZE APPLICATION BEFORE EXPORT
-// ============================================================
-//
-// IMPORTANT:
-// MongoDB connection and route registration happen BEFORE
-// requests reach the 404 handler.
-//
-// This fixes:
-// GET /products
-// GET /products?page=1&limit=8
-// GET /products/:id
-//
-// ============================================================
-
-await connectDB();
-
-mountRoutes();
-
-console.log("Application initialization completed.");
 
 // ============================================================
 // EXPORTS

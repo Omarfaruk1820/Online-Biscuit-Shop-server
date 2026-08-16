@@ -40,7 +40,7 @@ const productsRoutes = (
   verifyUser,
   verifyAdmin,
 ) => {
-   console.log("Products Routes Loaded");
+  console.log("Products Routes Loaded");
   const router = express.Router();
 
   // ============================================================
@@ -73,7 +73,10 @@ const productsRoutes = (
   // ============================================================
 
   router.get("/", async (req, res) => {
-    console.log("GET /products HIT");
+    console.log("=================================");
+    console.log("GET /products ROUTE HIT");
+    console.log("Query:", req.query);
+    console.log("=================================");
     try {
       const parsedPage = Number.parseInt(req.query.page, 10);
 
