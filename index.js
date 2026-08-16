@@ -119,7 +119,7 @@ app.use(
   cors({
     origin(origin, callback) {
       // Requests without Origin:
-      // Postman, server-to-server, direct browser navigation, etc.
+      // Postman, server-to-server, direct browser requests, etc.
       if (!origin) {
         return callback(null, true);
       }
@@ -207,6 +207,22 @@ let connectionPromise = null;
 let routesMounted = false;
 
 // ============================================================
+// IMPORTANT
+// ============================================================
+//
+// This router is mounted BEFORE the 404 handler.
+//
+// We will add /auth, /products, /carts, etc.
+// INSIDE this router after MongoDB connects.
+//
+// This prevents the dynamic-route-after-404 problem.
+// ============================================================
+
+const apiRouter = express.Router();
+
+app.use(apiRouter);
+
+// ============================================================
 // CONNECT DATABASE
 // ============================================================
 
@@ -216,7 +232,7 @@ const connectDB = async () => {
     return db;
   }
 
-  // Connection already in progress
+  // Connection already running
   if (connectionPromise) {
     return connectionPromise;
   }
@@ -240,11 +256,15 @@ const connectDB = async () => {
       db = database;
 
       productsCollection = db.collection("products");
+
       usersCollection = db.collection("users");
+
       cartsCollection = db.collection("carts");
+
       ordersCollection = db.collection("orders");
 
       console.log("MongoDB connected successfully.");
+
       console.log(`Database: ${DB_NAME}`);
 
       return db;
@@ -281,7 +301,7 @@ const connectDB = async () => {
 };
 
 // ============================================================
-// MOUNT ROUTES
+// MOUNT APPLICATION ROUTES
 // ============================================================
 
 const mountRoutes = () => {
@@ -295,28 +315,26 @@ const mountRoutes = () => {
     !cartsCollection ||
     !ordersCollection
   ) {
-    throw new Error(
-      "Cannot mount routes because MongoDB collections are unavailable.",
-    );
+    throw new Error("MongoDB collections are unavailable.");
   }
 
   // ==========================================================
   // AUTH
   // ==========================================================
 
-  app.use("/auth", authRoutes(usersCollection));
+  apiRouter.use("/auth", authRoutes(usersCollection));
 
   // ==========================================================
   // USERS
   // ==========================================================
 
-  app.use("/users", usersRoutes(usersCollection));
+  apiRouter.use("/users", usersRoutes(usersCollection));
 
   // ==========================================================
   // PRODUCTS
   // ==========================================================
 
-  app.use(
+  apiRouter.use(
     "/products",
     productsRoutes(
       productsCollection,
@@ -331,7 +349,7 @@ const mountRoutes = () => {
   // CARTS
   // ==========================================================
 
-  app.use(
+  apiRouter.use(
     "/carts",
     cartsRoutes(cartsCollection, productsCollection, verifyToken),
   );
@@ -340,7 +358,7 @@ const mountRoutes = () => {
   // ORDERS
   // ==========================================================
 
-  app.use(
+  apiRouter.use(
     "/orders",
     ordersRoutes(
       client,
@@ -356,7 +374,7 @@ const mountRoutes = () => {
   // ADMIN
   // ==========================================================
 
-  app.use(
+  apiRouter.use(
     "/admin",
     adminRoutes(
       usersCollection,
@@ -371,7 +389,7 @@ const mountRoutes = () => {
   // INVOICE
   // ==========================================================
 
-  app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
+  apiRouter.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
 
   routesMounted = true;
 
@@ -379,13 +397,15 @@ const mountRoutes = () => {
 };
 
 // ============================================================
-// INITIALIZATION MIDDLEWARE
+// INITIALIZE DATABASE + ROUTES
 // ============================================================
 //
 // IMPORTANT:
 //
-// We initialize MongoDB before processing application routes.
-// This avoids relying on top-level await during Vercel startup.
+// We initialize before every request if necessary,
+// but routes themselves live inside apiRouter.
+//
+// apiRouter was registered BEFORE the 404 handler.
 //
 // ============================================================
 
@@ -407,7 +427,7 @@ app.use(async (req, res, next) => {
 });
 
 // ============================================================
-// HEALTH CHECK
+// ROOT HEALTH CHECK
 // ============================================================
 
 app.get("/", async (req, res) => {
@@ -422,13 +442,14 @@ app.get("/", async (req, res) => {
 });
 
 // ============================================================
-// API DEBUG ROUTE
+// API STATUS
 // ============================================================
 
 app.get("/api-status", (req, res) => {
   return res.status(200).json({
     success: true,
     message: "API is working.",
+    environment: NODE_ENV,
     database: db ? "connected" : "disconnected",
     routesMounted,
     routes: [
@@ -463,7 +484,7 @@ app.use((err, req, res, next) => {
   console.error("GLOBAL SERVER ERROR:", err?.stack || err);
 
   // ----------------------------------------------------------
-  // CORS
+  // CORS ERROR
   // ----------------------------------------------------------
 
   if (err?.message === "CORS_NOT_ALLOWED") {
@@ -474,7 +495,7 @@ app.use((err, req, res, next) => {
   }
 
   // ----------------------------------------------------------
-  // STATUS
+  // STATUS CODE
   // ----------------------------------------------------------
 
   const statusCode =
@@ -483,7 +504,7 @@ app.use((err, req, res, next) => {
       : 500;
 
   // ----------------------------------------------------------
-  // PRODUCTION
+  // PRODUCTION RESPONSE
   // ----------------------------------------------------------
 
   if (isProduction) {
@@ -503,7 +524,7 @@ app.use((err, req, res, next) => {
   }
 
   // ----------------------------------------------------------
-  // DEVELOPMENT
+  // DEVELOPMENT RESPONSE
   // ----------------------------------------------------------
 
   return res.status(statusCode).json({
@@ -513,7 +534,26 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// EXPORTS
+// INITIAL DATABASE CONNECTION
+// ============================================================
+//
+// This happens once when the Vercel function instance
+// initializes.
+//
+// ============================================================
+
+try {
+  await connectDB();
+
+  mountRoutes();
+} catch (error) {
+  console.error("INITIAL APPLICATION STARTUP FAILED:", error?.stack || error);
+
+  throw error;
+}
+
+// ============================================================
+// EXPORT
 // ============================================================
 
 export {
