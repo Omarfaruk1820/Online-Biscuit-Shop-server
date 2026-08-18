@@ -5,8 +5,6 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { MongoClient, ServerApiVersion } from "mongodb";
 
-import "../utils/firebaseAdmin.js";
-
 import authRoutes from "../routes/auth.routes.js";
 import usersRoutes from "../routes/users.routes.js";
 import productsRoutes from "../routes/products.routes.js";
@@ -362,9 +360,9 @@ const mountRoutes = () => {
   app.use(
     "/admin",
     adminRoutes(
+      ordersCollection,
       usersCollection,
       productsCollection,
-      ordersCollection,
       verifyToken,
       verifyAdmin,
     ),

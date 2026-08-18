@@ -11,8 +11,10 @@ const verifyToken = (req, res, next) => {
       });
     }
 
-    if (!process.env.JWT_SECRET) {
-      console.error("JWT_SECRET is missing.");
+    const jwtSecret = process.env.JWT_SECRET;
+
+    if (!jwtSecret) {
+      console.error("VERIFY TOKEN: JWT_SECRET is missing.");
 
       return res.status(500).json({
         success: false,
@@ -20,7 +22,7 @@ const verifyToken = (req, res, next) => {
       });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+    const decoded = jwt.verify(token, jwtSecret, {
       algorithms: ["HS256"],
       issuer: "BiscuitShop",
       audience: "BiscuitShopClient",
@@ -51,7 +53,10 @@ const verifyToken = (req, res, next) => {
 
     return next();
   } catch (error) {
-    console.error("VERIFY TOKEN ERROR:", error?.message || error);
+    console.error("VERIFY TOKEN ERROR:", {
+      name: error?.name,
+      message: error?.message,
+    });
 
     if (error?.name === "TokenExpiredError") {
       return res.status(401).json({
@@ -60,9 +65,16 @@ const verifyToken = (req, res, next) => {
       });
     }
 
+    if (error?.name === "JsonWebTokenError") {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authentication token.",
+      });
+    }
+
     return res.status(401).json({
       success: false,
-      message: "Invalid authentication token.",
+      message: "Authentication failed.",
     });
   }
 };

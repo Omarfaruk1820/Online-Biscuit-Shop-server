@@ -1,5 +1,3 @@
-// middleware/verifyAdmin.js
-
 const verifyAdmin = (req, res, next) => {
   try {
     // Ensure verifyToken + database user middleware has already run

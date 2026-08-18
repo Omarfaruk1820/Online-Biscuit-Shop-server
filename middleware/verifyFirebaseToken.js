@@ -1,4 +1,4 @@
-import firebaseAdmin from "../utils/firebaseAdmin.js";
+import { firebaseAdminAuth } from "../config/firebaseAdmin.js";
 
 const verifyFirebaseToken = async (req, res, next) => {
   try {
@@ -7,26 +7,27 @@ const verifyFirebaseToken = async (req, res, next) => {
     if (!authorization.startsWith("Bearer ")) {
       return res.status(401).json({
         success: false,
-        message: "Firebase ID token is required.",
+        message: "Unauthorized. Firebase authentication token is missing.",
       });
     }
 
-    const idToken = authorization.substring(7).trim();
+    const token = authorization.substring(7).trim();
 
-    if (!idToken) {
+    if (!token) {
       return res.status(401).json({
         success: false,
-        message: "Firebase ID token is missing.",
+        message: "Unauthorized. Firebase authentication token is missing.",
       });
     }
 
-    const decodedToken = await firebaseAdmin.auth().verifyIdToken(idToken);
-
-    req.firebaseUser = decodedToken;
+    req.firebaseUser = await firebaseAdminAuth.verifyIdToken(token);
 
     next();
   } catch (error) {
-    console.error("VERIFY FIREBASE TOKEN ERROR:", error?.message || error);
+    console.error(
+      "VERIFY FIREBASE TOKEN ERROR:",
+      error?.code || error?.message || error,
+    );
 
     return res.status(401).json({
       success: false,

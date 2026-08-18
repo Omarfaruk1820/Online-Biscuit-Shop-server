@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { ObjectId } from "mongodb";
 
+import verifyFirebaseToken from "../middleware/verifyFirebaseToken.js";
 import verifyToken from "../middleware/verifyToken.js";
 import verifyUser from "../middleware/verifyUser.js";
 import verifyAdmin from "../middleware/verifyAdmin.js";
@@ -8,9 +9,9 @@ import verifyAdmin from "../middleware/verifyAdmin.js";
 const usersRoutes = (usersCollection) => {
   const router = Router();
 
-  // =========================
-  // Helpers
-  // =========================
+  // ============================================================
+  // HELPERS
+  // ============================================================
 
   const normalizeEmail = (email = "") => {
     return typeof email === "string" ? email.trim().toLowerCase() : "";
@@ -26,41 +27,43 @@ const usersRoutes = (usersCollection) => {
 
   const userProjection = {
     _id: 1,
+    uid: 1,
     name: 1,
     email: 1,
     photo: 1,
     role: 1,
     status: 1,
     provider: 1,
-    emailVerified: 1,
     createdAt: 1,
     updatedAt: 1,
     lastLogin: 1,
   };
 
-  // =========================
+  // ============================================================
   // POST /users
-  // Register / Google Upsert
-  // =========================
-
-  router.post("/", async (req, res) => {
+  // Create or update user
+  // ============================================================
+  router.post("/", verifyFirebaseToken, async (req, res) => {
     try {
-      const {
-        name = "",
-        email,
-        photo = "",
-        provider = "password",
-        emailVerified = false,
-      } = req.body || {};
+      const firebaseUser = req.firebaseUser;
 
-      const normalizedEmail = normalizeEmail(email);
-
-      if (!normalizedEmail) {
-        return res.status(400).json({
+      if (!firebaseUser?.uid) {
+        return res.status(401).json({
           success: false,
-          message: "Valid email is required.",
+          message: "Firebase authentication failed.",
         });
       }
+
+      const firebaseEmail = normalizeEmail(firebaseUser.email);
+
+      if (!firebaseEmail) {
+        return res.status(400).json({
+          success: false,
+          message: "Firebase account email is missing.",
+        });
+      }
+
+      const { name = "", photo = "", provider = "password" } = req.body || {};
 
       if (!["password", "google.com"].includes(provider)) {
         return res.status(400).json({
@@ -71,29 +74,42 @@ const usersRoutes = (usersCollection) => {
 
       const now = new Date();
 
+      const updateData = {
+        uid: String(firebaseUser.uid).trim(),
+
+        name: typeof name === "string" ? name.trim() : "",
+
+        photo: typeof photo === "string" ? photo.trim() : "",
+
+        provider,
+
+        updatedAt: now,
+
+        lastLogin: now,
+      };
+
       const result = await usersCollection.updateOne(
-        { email: normalizedEmail },
         {
-          $set: {
-            name: typeof name === "string" ? name.trim() : "",
-            photo: typeof photo === "string" ? photo.trim() : "",
-            provider,
-            emailVerified: Boolean(emailVerified),
-            updatedAt: now,
-            lastLogin: now,
-          },
+          email: firebaseEmail,
+        },
+        {
+          $set: updateData,
+
           $setOnInsert: {
-            email: normalizedEmail,
+            email: firebaseEmail,
             role: "user",
             status: "active",
             createdAt: now,
           },
         },
-        { upsert: true },
+        {
+          upsert: true,
+        },
       );
 
       return res.status(result.upsertedCount ? 201 : 200).json({
         success: true,
+
         message: result.upsertedCount
           ? "User created successfully."
           : "User updated successfully.",
@@ -108,10 +124,10 @@ const usersRoutes = (usersCollection) => {
     }
   });
 
-  // =========================
+  // ============================================================
   // GET /users
-  // Admin User List
-  // =========================
+  // Admin only
+  // ============================================================
 
   router.get(
     "/",
@@ -203,9 +219,9 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // =========================
+  // ============================================================
   // GET /users/:email
-  // =========================
+  // ============================================================
 
   router.get(
     "/:email",
@@ -223,7 +239,9 @@ const usersRoutes = (usersCollection) => {
         }
 
         const user = await usersCollection.findOne(
-          { email },
+          {
+            email,
+          },
           {
             projection: userProjection,
           },
@@ -251,9 +269,10 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // =========================
+  // ============================================================
   // PATCH /users/:id/role
-  // =========================
+  // Admin only
+  // ============================================================
 
   router.patch(
     "/:id/role",
@@ -302,7 +321,9 @@ const usersRoutes = (usersCollection) => {
         }
 
         const result = await usersCollection.updateOne(
-          { _id: targetId },
+          {
+            _id: targetId,
+          },
           {
             $set: {
               role,
@@ -327,9 +348,10 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // =========================
+  // ============================================================
   // PATCH /users/:id/status
-  // =========================
+  // Admin only
+  // ============================================================
 
   router.patch(
     "/:id/status",
@@ -378,7 +400,9 @@ const usersRoutes = (usersCollection) => {
         }
 
         const result = await usersCollection.updateOne(
-          { _id: targetId },
+          {
+            _id: targetId,
+          },
           {
             $set: {
               status,
@@ -403,9 +427,10 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // =========================
+  // ============================================================
   // DELETE /users/:id
-  // =========================
+  // Admin only
+  // ============================================================
 
   router.delete(
     "/:id",

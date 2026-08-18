@@ -14,69 +14,127 @@ const authRoutes = (usersCollection) => {
 
   const router = Router();
 
-  const normalizeEmail = (email = "") => {
-    if (typeof email !== "string") {
-      return "";
-    }
+  // ============================================================
+  // HELPERS
+  // ============================================================
 
-    return email.trim().toLowerCase();
+  const normalizeEmail = (email = "") => {
+    return typeof email === "string" ? email.trim().toLowerCase() : "";
   };
 
-  const normalizeStatus = (status = "") => {
-    if (typeof status !== "string" || !status.trim()) {
+  const normalizeStatus = (status = "active") => {
+    if (typeof status !== "string") {
       return "active";
     }
 
-    return status.trim().toLowerCase();
+    return status.trim().toLowerCase() || "active";
   };
+
+  const getSafeUser = (user) => {
+    if (!user) {
+      return null;
+    }
+
+    return {
+      _id: user._id || null,
+      uid: user.uid || "",
+      name: user.name || "",
+      email: normalizeEmail(user.email),
+      photo: user.photo || "",
+      role: user.role || "user",
+      provider: user.provider || "password",
+      status: normalizeStatus(user.status),
+      createdAt: user.createdAt || null,
+      updatedAt: user.updatedAt || null,
+      lastLogin: user.lastLogin || null,
+    };
+  };
+
+  const userProjection = {
+    _id: 1,
+    uid: 1,
+    name: 1,
+    email: 1,
+    photo: 1,
+    role: 1,
+    provider: 1,
+    status: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    lastLogin: 1,
+  };
+
+  // ============================================================
+  // POST /auth/jwt
+  // ============================================================
+  //
+  // Firebase ID Token
+  //       ↓
+  // verifyFirebaseToken
+  //       ↓
+  // Firebase User
+  //       ↓
+  // MongoDB User
+  //       ↓
+  // Application JWT
+  //       ↓
+  // HTTP-only Cookie
+  //
+  // No email verification check
+  // ============================================================
 
   router.post("/jwt", verifyFirebaseToken, async (req, res) => {
     try {
       const firebaseUser = req.firebaseUser;
 
-      if (!firebaseUser) {
+      if (!firebaseUser?.uid) {
         return res.status(401).json({
           success: false,
           message: "Firebase authentication failed.",
         });
       }
 
-      const email = normalizeEmail(firebaseUser.email);
+      const firebaseUid = String(firebaseUser.uid).trim();
+      const firebaseEmail = normalizeEmail(firebaseUser.email);
 
-      if (!email) {
+      if (!firebaseEmail) {
         return res.status(401).json({
           success: false,
-          message: "Authenticated Firebase email is invalid.",
+          message: "Firebase account email is missing.",
         });
       }
 
-      if (firebaseUser.email_verified === false) {
-        return res.status(403).json({
-          success: false,
-          message: "Please verify your email address before continuing.",
-        });
-      }
+      // ----------------------------------------------------------
+      // Find user by Firebase UID
+      // ----------------------------------------------------------
 
-      const user = await usersCollection.findOne(
+      let user = await usersCollection.findOne(
         {
-          email,
+          uid: firebaseUid,
         },
         {
-          projection: {
-            _id: 1,
-            name: 1,
-            email: 1,
-            photo: 1,
-            role: 1,
-            provider: 1,
-            status: 1,
-            emailVerified: 1,
-            createdAt: 1,
-            updatedAt: 1,
-            lastLogin: 1,
-          },
+          projection: userProjection,
         },
       );
+
+      // ----------------------------------------------------------
+      // Fallback: find user by email
+      // ----------------------------------------------------------
+
+      if (!user) {
+        user = await usersCollection.findOne(
+          {
+            email: firebaseEmail,
+          },
+          {
+            projection: userProjection,
+          },
+        );
+      }
+
+      // ----------------------------------------------------------
+      // User not found
+      // ----------------------------------------------------------
 
       if (!user) {
         return res.status(404).json({
@@ -85,29 +143,68 @@ const authRoutes = (usersCollection) => {
         });
       }
 
+      // ----------------------------------------------------------
+      // Database email
+      // ----------------------------------------------------------
+
       const databaseEmail = normalizeEmail(user.email);
 
       if (!databaseEmail) {
-        console.error(
-          "POST /auth/jwt: User email is missing or invalid in database.",
-        );
-
         return res.status(500).json({
           success: false,
           message: "User account has invalid authentication data.",
         });
       }
 
-      if (databaseEmail !== email) {
-        console.error(
-          "POST /auth/jwt: Firebase email and database email do not match.",
-        );
+      // ----------------------------------------------------------
+      // Email identity check
+      // ----------------------------------------------------------
 
+      if (databaseEmail !== firebaseEmail) {
         return res.status(403).json({
           success: false,
-          message: "Authentication identity does not match the user account.",
+          message: "Authentication email does not match the user account.",
         });
       }
+
+      // ----------------------------------------------------------
+      // Firebase UID check
+      // ----------------------------------------------------------
+
+      if (user.uid && String(user.uid).trim() !== firebaseUid) {
+        return res.status(403).json({
+          success: false,
+          message: "Authentication identity does not match.",
+        });
+      }
+
+      // ----------------------------------------------------------
+      // Attach Firebase UID if old user has no UID
+      // ----------------------------------------------------------
+
+      if (!user.uid) {
+        const now = new Date();
+
+        await usersCollection.updateOne(
+          {
+            _id: user._id,
+            $or: [{ uid: { $exists: false } }, { uid: null }, { uid: "" }],
+          },
+          {
+            $set: {
+              uid: firebaseUid,
+              updatedAt: now,
+            },
+          },
+        );
+
+        user.uid = firebaseUid;
+        user.updatedAt = now;
+      }
+
+      // ----------------------------------------------------------
+      // Account status
+      // ----------------------------------------------------------
 
       const status = normalizeStatus(user.status);
 
@@ -118,58 +215,73 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      let token;
-
-      try {
-        token = createToken({
-          email: databaseEmail,
-        });
-      } catch (tokenError) {
-        console.error(
-          "POST /auth/jwt: Token creation failed:",
-          tokenError?.message || tokenError,
-        );
-
-        return res.status(500).json({
+      if (status !== "active") {
+        return res.status(403).json({
           success: false,
-          message: "Failed to create authentication token.",
+          message: "Your account is not active.",
         });
       }
 
-      if (typeof token !== "string" || !token.trim()) {
+      // ----------------------------------------------------------
+      // Update last login
+      // ----------------------------------------------------------
+
+      const now = new Date();
+
+      await usersCollection.updateOne(
+        {
+          _id: user._id,
+        },
+        {
+          $set: {
+            lastLogin: now,
+            updatedAt: now,
+          },
+        },
+      );
+
+      user = {
+        ...user,
+        uid: firebaseUid,
+        lastLogin: now,
+        updatedAt: now,
+      };
+
+      // ----------------------------------------------------------
+      // Create application JWT
+      // ----------------------------------------------------------
+
+      const token = createToken({
+        email: databaseEmail,
+      });
+
+      if (!token) {
         return res.status(500).json({
           success: false,
-          message: "Failed to create authentication token.",
+          message: "Authentication token was not created.",
         });
       }
+
+      // ----------------------------------------------------------
+      // Set HTTP-only cookie
+      // ----------------------------------------------------------
 
       res.cookie("token", token, cookieOptions);
+
+      // ----------------------------------------------------------
+      // Response
+      // ----------------------------------------------------------
 
       return res.status(200).json({
         success: true,
         message: "Authentication successful.",
-
-        user: {
-          _id: user._id,
-
-          name: user.name || "",
-
-          email: databaseEmail,
-
-          photo: user.photo || "",
-
-          role: user.role || "user",
-
-          provider: user.provider || "password",
-
-          status,
-
-          emailVerified:
-            Boolean(user.emailVerified) || Boolean(firebaseUser.email_verified),
-        },
+        user: getSafeUser(user),
       });
     } catch (error) {
-      console.error("POST /auth/jwt ERROR:", error?.stack || error);
+      console.error(
+        "POST /auth/jwt ERROR:",
+        error?.stack || error?.message || error,
+      );
 
       return res.status(500).json({
         success: false,
@@ -177,6 +289,10 @@ const authRoutes = (usersCollection) => {
       });
     }
   });
+
+  // ============================================================
+  // POST /auth/logout
+  // ============================================================
 
   router.post("/logout", (req, res) => {
     try {
@@ -190,7 +306,7 @@ const authRoutes = (usersCollection) => {
         message: "Logout successful.",
       });
     } catch (error) {
-      console.error("POST /auth/logout ERROR:", error?.stack || error);
+      console.error("POST /auth/logout ERROR:", error);
 
       return res.status(500).json({
         success: false,
@@ -198,6 +314,10 @@ const authRoutes = (usersCollection) => {
       });
     }
   });
+
+  // ============================================================
+  // GET /auth/me
+  // ============================================================
 
   router.get(
     "/me",
@@ -223,44 +343,19 @@ const authRoutes = (usersCollection) => {
           });
         }
 
-        const email = normalizeEmail(user.email);
-
-        if (!email) {
-          return res.status(500).json({
+        if (status !== "active") {
+          return res.status(403).json({
             success: false,
-            message: "Authenticated user has invalid email data.",
+            message: "Your account is not active.",
           });
         }
 
         return res.status(200).json({
           success: true,
-
-          user: {
-            _id: user._id,
-
-            name: user.name || "",
-
-            email,
-
-            photo: user.photo || "",
-
-            role: user.role || "user",
-
-            provider: user.provider || "password",
-
-            status,
-
-            emailVerified: Boolean(user.emailVerified),
-
-            createdAt: user.createdAt || null,
-
-            updatedAt: user.updatedAt || null,
-
-            lastLogin: user.lastLogin || null,
-          },
+          user: getSafeUser(user),
         });
       } catch (error) {
-        console.error("GET /auth/me ERROR:", error?.stack || error);
+        console.error("GET /auth/me ERROR:", error);
 
         return res.status(500).json({
           success: false,
