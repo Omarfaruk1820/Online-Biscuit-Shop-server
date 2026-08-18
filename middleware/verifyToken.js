@@ -1,5 +1,9 @@
 import jwt from "jsonwebtoken";
 
+// ============================================================
+// VERIFY APPLICATION JWT
+// ============================================================
+
 const verifyToken = (req, res, next) => {
   try {
     const token = req.cookies?.token;
@@ -11,9 +15,9 @@ const verifyToken = (req, res, next) => {
       });
     }
 
-    const jwtSecret = process.env.JWT_SECRET;
+    const secret = String(process.env.JWT_SECRET || "").trim();
 
-    if (!jwtSecret) {
+    if (!secret) {
       console.error("VERIFY TOKEN: JWT_SECRET is missing.");
 
       return res.status(500).json({
@@ -22,11 +26,26 @@ const verifyToken = (req, res, next) => {
       });
     }
 
-    const decoded = jwt.verify(token, jwtSecret, {
+    const decoded = jwt.verify(token, secret, {
       algorithms: ["HS256"],
       issuer: "BiscuitShop",
       audience: "BiscuitShopClient",
     });
+
+    // ----------------------------------------------------------
+    // Validate token type
+    // ----------------------------------------------------------
+
+    if (decoded?.type !== "access") {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized. Invalid token type.",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // Validate email
+    // ----------------------------------------------------------
 
     const email =
       typeof decoded?.email === "string"
@@ -40,12 +59,9 @@ const verifyToken = (req, res, next) => {
       });
     }
 
-    if (decoded?.type !== "access") {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized. Invalid token type.",
-      });
-    }
+    // ----------------------------------------------------------
+    // Attach authenticated identity
+    // ----------------------------------------------------------
 
     req.user = {
       email,

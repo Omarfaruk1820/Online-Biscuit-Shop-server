@@ -5,6 +5,10 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { MongoClient, ServerApiVersion } from "mongodb";
 
+// ============================================================
+// ROUTES
+// ============================================================
+
 import authRoutes from "../routes/auth.routes.js";
 import usersRoutes from "../routes/users.routes.js";
 import productsRoutes from "../routes/products.routes.js";
@@ -13,12 +17,16 @@ import ordersRoutes from "../routes/orders.routes.js";
 import invoiceRoutes from "../routes/invoice.routes.js";
 import adminRoutes from "../routes/admin.routes.js";
 
+// ============================================================
+// MIDDLEWARE
+// ============================================================
+
 import verifyToken from "../middleware/verifyToken.js";
 import verifyUser from "../middleware/verifyUser.js";
 import verifyAdmin from "../middleware/verifyAdmin.js";
 
 // ============================================================
-
+// APP
 // ============================================================
 
 const app = express();
@@ -26,7 +34,7 @@ const app = express();
 app.disable("x-powered-by");
 
 // ============================================================
-
+// ENVIRONMENT
 // ============================================================
 
 const NODE_ENV = String(
@@ -118,7 +126,8 @@ if (!isProduction) {
 app.use(
   cors({
     origin(origin, callback) {
-      // Allow requests without an Origin header.
+      // Requests without Origin header
+      // Example: server-to-server / health checks
       if (!origin) {
         return callback(null, true);
       }
@@ -168,6 +177,10 @@ app.use(
   }),
 );
 
+// ============================================================
+// COOKIE PARSER
+// ============================================================
+
 app.use(cookieParser());
 
 // ============================================================
@@ -206,14 +219,16 @@ let connectionPromise = null;
 let routesMounted = false;
 
 // ============================================================
-// CONNECT DATABASE
+// CONNECT TO MONGODB
 // ============================================================
 
 const connectDB = async () => {
+  // Already connected
   if (db) {
     return db;
   }
 
+  // Connection already in progress
   if (connectionPromise) {
     return connectionPromise;
   }
@@ -224,6 +239,7 @@ const connectDB = async () => {
         console.log("Connecting to MongoDB...");
       }
 
+      // Create MongoClient only once
       if (!client) {
         client = new MongoClient(MONGO_URI, mongoOptions);
       }
@@ -238,6 +254,7 @@ const connectDB = async () => {
 
       db = database;
 
+      // Collections
       productsCollection = db.collection("products");
       usersCollection = db.collection("users");
       cartsCollection = db.collection("carts");
@@ -282,14 +299,16 @@ const connectDB = async () => {
 };
 
 // ============================================================
-// MOUNT APPLICATION ROUTES
+// MOUNT ROUTES
 // ============================================================
 
 const mountRoutes = () => {
+  // Prevent duplicate mounting
   if (routesMounted) {
     return;
   }
 
+  // Make sure database is ready
   if (
     !productsCollection ||
     !usersCollection ||
@@ -301,21 +320,21 @@ const mountRoutes = () => {
     );
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // AUTH
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use("/auth", authRoutes(usersCollection));
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // USERS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use("/users", usersRoutes(usersCollection));
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // PRODUCTS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/products",
@@ -328,18 +347,18 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // CARTS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/carts",
     cartsRoutes(cartsCollection, productsCollection, verifyToken),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // ORDERS
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/orders",
@@ -353,9 +372,9 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // ADMIN
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use(
     "/admin",
@@ -368,9 +387,9 @@ const mountRoutes = () => {
     ),
   );
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // INVOICE
-  // ----------------------------------------------------------
+  // ==========================================================
 
   app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
 
@@ -421,14 +440,13 @@ app.get("/api-status", (req, res) => {
 });
 
 // ============================================================
-// DATABASE + ROUTE INITIALIZATION
+// DATABASE INITIALIZATION
 // ============================================================
 
 try {
   await connectDB();
 
-  // IMPORTANT:
-  // Routes are mounted before the 404 handler.
+  // Routes must be mounted before 404 handler
   mountRoutes();
 } catch (error) {
   console.error("INITIAL APPLICATION STARTUP FAILED:", error?.stack || error);
@@ -455,9 +473,9 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error("GLOBAL SERVER ERROR:", err?.stack || err);
 
-  // ----------------------------------------------------------
-  // CORS
-  // ----------------------------------------------------------
+  // ==========================================================
+  // CORS ERROR
+  // ==========================================================
 
   if (err?.message === "CORS_NOT_ALLOWED") {
     return res.status(403).json({
@@ -466,18 +484,18 @@ app.use((err, req, res, next) => {
     });
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // STATUS CODE
-  // ----------------------------------------------------------
+  // ==========================================================
 
   const statusCode =
     Number.isInteger(err?.status) && err.status >= 400 && err.status < 600
       ? err.status
       : 500;
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // PRODUCTION ERROR
-  // ----------------------------------------------------------
+  // ==========================================================
 
   if (isProduction) {
     const productionMessages = {
@@ -495,9 +513,9 @@ app.use((err, req, res, next) => {
     });
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // DEVELOPMENT ERROR
-  // ----------------------------------------------------------
+  // ==========================================================
 
   return res.status(statusCode).json({
     success: false,
@@ -506,7 +524,7 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// EXPORT APP
+// EXPORTS
 // ============================================================
 
 export {
@@ -521,15 +539,3 @@ export {
 };
 
 export default app;
-
-// ============================================================
-// LOCAL DEVELOPMENT SERVER
-// ============================================================
-
-// if (NODE_ENV !== "production") {
-//   const PORT = Number(process.env.PORT) || 5000;
-
-//   app.listen(PORT, () => {
-//     console.log(`Server running on port ${PORT}`);
-//   });
-// }

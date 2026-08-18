@@ -6,12 +6,20 @@ import verifyToken from "../middleware/verifyToken.js";
 import verifyUser from "../middleware/verifyUser.js";
 import verifyAdmin from "../middleware/verifyAdmin.js";
 
+// ============================================================
+// USERS ROUTES
+// ============================================================
+
 const usersRoutes = (usersCollection) => {
+  if (!usersCollection) {
+    throw new Error("usersRoutes requires usersCollection.");
+  }
+
   const router = Router();
 
-  // ============================================================
+  // ==========================================================
   // HELPERS
-  // ============================================================
+  // ==========================================================
 
   const normalizeEmail = (email = "") => {
     return typeof email === "string" ? email.trim().toLowerCase() : "";
@@ -39,12 +47,21 @@ const usersRoutes = (usersCollection) => {
     lastLogin: 1,
   };
 
-  // ============================================================
+  // ==========================================================
   // POST /users
+  //
+  // Firebase authenticated user
+  //        ↓
+  // MongoDB create/update
+  //
+  // ==========================================================
 
-  // ============================================================
   router.post("/", verifyFirebaseToken, async (req, res) => {
     try {
+      // ========================================================
+      // FIREBASE USER
+      // ========================================================
+
       const firebaseUser = req.firebaseUser;
 
       if (!firebaseUser?.uid) {
@@ -54,80 +71,223 @@ const usersRoutes = (usersCollection) => {
         });
       }
 
-      const firebaseEmail = normalizeEmail(firebaseUser.email);
+      const uid = String(firebaseUser.uid).trim();
 
-      if (!firebaseEmail) {
+      const email = normalizeEmail(firebaseUser.email);
+
+      if (!email) {
         return res.status(400).json({
           success: false,
           message: "Firebase account email is missing.",
         });
       }
 
-      const { name = "", photo = "", provider = "password" } = req.body || {};
+      // ========================================================
+      // CLIENT PROFILE DATA
+      // ========================================================
 
-      if (!["password", "google.com"].includes(provider)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid authentication provider.",
-        });
-      }
+      const { name = "", photo = "" } = req.body || {};
+
+      const cleanName =
+        typeof name === "string" ? name.trim().slice(0, 100) : "";
+
+      const cleanPhoto = typeof photo === "string" ? photo.trim() : "";
+
+      // ========================================================
+      // PROVIDER
+      // ========================================================
+      // Firebase verified identity is the source of truth.
+      // Never trust provider sent by the client.
+
+      const firebaseProvider =
+        firebaseUser.providerData?.[0]?.providerId || "password";
+
+      const allowedProviders = ["password", "google.com"];
+
+      const provider = allowedProviders.includes(firebaseProvider)
+        ? firebaseProvider
+        : "password";
+
+      // ========================================================
+      // TIMESTAMP
+      // ========================================================
 
       const now = new Date();
 
-      const updateData = {
-        uid: String(firebaseUser.uid).trim(),
+      // ========================================================
+      // FIND USER BY UID
+      // ========================================================
 
-        name: typeof name === "string" ? name.trim() : "",
+      const userByUid = await usersCollection.findOne({
+        uid,
+      });
 
-        photo: typeof photo === "string" ? photo.trim() : "",
+      // ========================================================
+      // FIND USER BY EMAIL
+      // ========================================================
+
+      const userByEmail = await usersCollection.findOne({
+        email,
+      });
+
+      // ========================================================
+      // IDENTITY CONFLICT
+      // ========================================================
+      // UID and email must belong to the same MongoDB user.
+
+      if (
+        userByUid &&
+        userByEmail &&
+        String(userByUid._id) !== String(userByEmail._id)
+      ) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Authentication identity conflict. UID and email belong to different accounts.",
+        });
+      }
+
+      // ========================================================
+      // EXISTING USER
+      // ========================================================
+
+      const existingUser = userByUid || userByEmail;
+
+      if (existingUser) {
+        // ------------------------------------------------------
+        // Existing UID belongs to another account
+        // ------------------------------------------------------
+
+        if (existingUser.uid && String(existingUser.uid).trim() !== uid) {
+          return res.status(409).json({
+            success: false,
+            message:
+              "This email is already linked to another authentication account.",
+          });
+        }
+
+        // ------------------------------------------------------
+        // Existing account status
+        // ------------------------------------------------------
+
+        const status =
+          typeof existingUser.status === "string" && existingUser.status.trim()
+            ? existingUser.status.trim().toLowerCase()
+            : "active";
+
+        if (status === "blocked") {
+          return res.status(403).json({
+            success: false,
+            message: "Your account has been blocked.",
+          });
+        }
+
+        // ------------------------------------------------------
+        // Update user
+        // ------------------------------------------------------
+
+        const updateData = {
+          uid,
+          email,
+          provider,
+          updatedAt: now,
+          lastLogin: now,
+        };
+
+        // Only update profile fields when values are available.
+
+        if (cleanName) {
+          updateData.name = cleanName;
+        }
+
+        if (cleanPhoto) {
+          updateData.photo = cleanPhoto;
+        }
+
+        await usersCollection.updateOne(
+          {
+            _id: existingUser._id,
+          },
+          {
+            $set: updateData,
+          },
+        );
+
+        return res.status(200).json({
+          success: true,
+          message: "User synchronized successfully.",
+        });
+      }
+
+      // ========================================================
+      // CREATE NEW USER
+      // ========================================================
+
+      const newUser = {
+        uid,
+
+        name: cleanName,
+
+        email,
+
+        photo: cleanPhoto,
 
         provider,
+
+        role: "user",
+
+        status: "active",
+
+        createdAt: now,
 
         updatedAt: now,
 
         lastLogin: now,
       };
 
-      const result = await usersCollection.updateOne(
-        {
-          email: firebaseEmail,
-        },
-        {
-          $set: updateData,
+      await usersCollection.insertOne(newUser);
 
-          $setOnInsert: {
-            email: firebaseEmail,
-            role: "user",
-            status: "active",
-            createdAt: now,
-          },
-        },
-        {
-          upsert: true,
-        },
-      );
+      // ========================================================
+      // SUCCESS
+      // ========================================================
 
-      return res.status(result.upsertedCount ? 201 : 200).json({
+      return res.status(201).json({
         success: true,
-
-        message: result.upsertedCount
-          ? "User created successfully."
-          : "User updated successfully.",
+        message: "User created successfully.",
       });
     } catch (error) {
-      console.error("POST /users ERROR:", error);
+      // ========================================================
+      // DUPLICATE KEY
+      // ========================================================
+
+      if (error?.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "An account with this authentication identity already exists.",
+        });
+      }
+
+      // ========================================================
+      // SERVER ERROR
+      // ========================================================
+
+      console.error(
+        "POST /users ERROR:",
+        error?.stack || error?.message || error,
+      );
 
       return res.status(500).json({
         success: false,
-        message: "Failed to save user.",
+        message: "Failed to synchronize user.",
       });
     }
   });
 
-  // ============================================================
+  // ==========================================================
   // GET /users
-  // Admin only
-  // ============================================================
+  // ADMIN ONLY
+  // ==========================================================
 
   router.get(
     "/",
@@ -137,6 +297,7 @@ const usersRoutes = (usersCollection) => {
     async (req, res) => {
       try {
         let page = Number.parseInt(req.query.page, 10);
+
         let limit = Number.parseInt(req.query.limit, 10);
 
         page = Number.isFinite(page) && page > 0 ? page : 1;
@@ -149,9 +310,13 @@ const usersRoutes = (usersCollection) => {
           typeof req.query.search === "string" ? req.query.search.trim() : "";
 
         const sort =
-          typeof req.query.sort === "string" ? req.query.sort : "newest";
+          typeof req.query.sort === "string" ? req.query.sort.trim() : "newest";
 
         const query = {};
+
+        // ------------------------------------------------------
+        // Search
+        // ------------------------------------------------------
 
         if (search) {
           const safeSearch = escapeRegex(search);
@@ -172,15 +337,41 @@ const usersRoutes = (usersCollection) => {
           ];
         }
 
+        // ------------------------------------------------------
+        // Sorting
+        // ------------------------------------------------------
+
         const sortMap = {
-          newest: { createdAt: -1 },
-          oldest: { createdAt: 1 },
-          name: { name: 1 },
-          email: { email: 1 },
-          role: { role: 1 },
+          newest: {
+            createdAt: -1,
+          },
+
+          oldest: {
+            createdAt: 1,
+          },
+
+          name: {
+            name: 1,
+          },
+
+          email: {
+            email: 1,
+          },
+
+          role: {
+            role: 1,
+          },
+
+          status: {
+            status: 1,
+          },
         };
 
         const sortOption = sortMap[sort] || sortMap.newest;
+
+        // ------------------------------------------------------
+        // Query
+        // ------------------------------------------------------
 
         const [users, total] = await Promise.all([
           usersCollection
@@ -198,18 +389,25 @@ const usersRoutes = (usersCollection) => {
 
         return res.status(200).json({
           success: true,
+
           data: users,
+
           pagination: {
             page,
             limit,
             total,
             totalPages,
+
             hasNextPage: page < totalPages,
+
             hasPrevPage: page > 1,
           },
         });
       } catch (error) {
-        console.error("GET /users ERROR:", error);
+        console.error(
+          "GET /users ERROR:",
+          error?.stack || error?.message || error,
+        );
 
         return res.status(500).json({
           success: false,
@@ -219,9 +417,12 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ============================================================
+  // ==========================================================
   // GET /users/:email
-  // ============================================================
+  //
+  // Authenticated user can only access own profile.
+  // Admin can access any user.
+  // ==========================================================
 
   router.get(
     "/:email",
@@ -229,18 +430,36 @@ const usersRoutes = (usersCollection) => {
     verifyUser(usersCollection),
     async (req, res) => {
       try {
-        const email = normalizeEmail(req.params.email);
+        const requestedEmail = normalizeEmail(req.params.email);
 
-        if (!email) {
+        if (!requestedEmail) {
           return res.status(400).json({
             success: false,
             message: "Valid email is required.",
           });
         }
 
+        const currentEmail = normalizeEmail(req.dbUser?.email);
+
+        const currentRole =
+          typeof req.dbUser?.role === "string"
+            ? req.dbUser.role.trim().toLowerCase()
+            : "user";
+
+        // ------------------------------------------------------
+        // Non-admin can only access own account
+        // ------------------------------------------------------
+
+        if (currentRole !== "admin" && requestedEmail !== currentEmail) {
+          return res.status(403).json({
+            success: false,
+            message: "You are not authorized to access this user.",
+          });
+        }
+
         const user = await usersCollection.findOne(
           {
-            email,
+            email: requestedEmail,
           },
           {
             projection: userProjection,
@@ -259,7 +478,10 @@ const usersRoutes = (usersCollection) => {
           data: user,
         });
       } catch (error) {
-        console.error("GET /users/:email ERROR:", error);
+        console.error(
+          "GET /users/:email ERROR:",
+          error?.stack || error?.message || error,
+        );
 
         return res.status(500).json({
           success: false,
@@ -269,10 +491,10 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ============================================================
+  // ==========================================================
   // PATCH /users/:id/role
-  // Admin only
-  // ============================================================
+  // ADMIN ONLY
+  // ==========================================================
 
   router.patch(
     "/:id/role",
@@ -282,6 +504,7 @@ const usersRoutes = (usersCollection) => {
     async (req, res) => {
       try {
         const { id } = req.params;
+
         const { role } = req.body || {};
 
         if (!isValidObjectId(id)) {
@@ -338,7 +561,10 @@ const usersRoutes = (usersCollection) => {
           message: "User role updated successfully.",
         });
       } catch (error) {
-        console.error("PATCH /users/:id/role ERROR:", error);
+        console.error(
+          "PATCH /users/:id/role ERROR:",
+          error?.stack || error?.message || error,
+        );
 
         return res.status(500).json({
           success: false,
@@ -348,10 +574,10 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ============================================================
+  // ==========================================================
   // PATCH /users/:id/status
-  // Admin only
-  // ============================================================
+  // ADMIN ONLY
+  // ==========================================================
 
   router.patch(
     "/:id/status",
@@ -361,6 +587,7 @@ const usersRoutes = (usersCollection) => {
     async (req, res) => {
       try {
         const { id } = req.params;
+
         const { status } = req.body || {};
 
         if (!isValidObjectId(id)) {
@@ -417,7 +644,10 @@ const usersRoutes = (usersCollection) => {
           message: `User ${status} successfully.`,
         });
       } catch (error) {
-        console.error("PATCH /users/:id/status ERROR:", error);
+        console.error(
+          "PATCH /users/:id/status ERROR:",
+          error?.stack || error?.message || error,
+        );
 
         return res.status(500).json({
           success: false,
@@ -427,10 +657,10 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ============================================================
+  // ==========================================================
   // DELETE /users/:id
-  // Admin only
-  // ============================================================
+  // ADMIN ONLY
+  // ==========================================================
 
   router.delete(
     "/:id",
@@ -483,11 +713,16 @@ const usersRoutes = (usersCollection) => {
 
         return res.status(200).json({
           success: true,
+
           deletedCount: result.deletedCount,
+
           message: "User deleted successfully.",
         });
       } catch (error) {
-        console.error("DELETE /users/:id ERROR:", error);
+        console.error(
+          "DELETE /users/:id ERROR:",
+          error?.stack || error?.message || error,
+        );
 
         return res.status(500).json({
           success: false,

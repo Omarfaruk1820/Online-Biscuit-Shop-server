@@ -1,36 +1,53 @@
+// ============================================================
+// VERIFY DATABASE USER
+// ============================================================
+
 const verifyUser = (usersCollection) => {
   if (!usersCollection) {
-    throw new Error("usersCollection is required in verifyUser middleware.");
+    throw new Error("verifyUser middleware requires usersCollection.");
   }
 
   return async (req, res, next) => {
     try {
-      const email = req.user?.email;
+      const email =
+        typeof req.user?.email === "string"
+          ? req.user.email.trim().toLowerCase()
+          : "";
 
-      if (typeof email !== "string" || !email.trim()) {
+      if (!email) {
         return res.status(401).json({
           success: false,
           message: "Unauthorized access.",
         });
       }
 
-      const normalizedEmail = email.trim().toLowerCase();
+      // --------------------------------------------------------
+      // Find MongoDB user
+      // --------------------------------------------------------
 
       const user = await usersCollection.findOne({
-        email: normalizedEmail,
+        email,
       });
 
       if (!user) {
         return res.status(404).json({
           success: false,
-          message: "User not found.",
+          message: "User account was not found.",
         });
       }
+
+      // --------------------------------------------------------
+      // Normalize status
+      // --------------------------------------------------------
 
       const status =
         typeof user.status === "string" && user.status.trim()
           ? user.status.trim().toLowerCase()
           : "active";
+
+      // --------------------------------------------------------
+      // Blocked account
+      // --------------------------------------------------------
 
       if (status === "blocked") {
         return res.status(403).json({
@@ -39,6 +56,21 @@ const verifyUser = (usersCollection) => {
         });
       }
 
+      // --------------------------------------------------------
+      // Other inactive status
+      // --------------------------------------------------------
+
+      if (status !== "active") {
+        return res.status(403).json({
+          success: false,
+          message: "Your account is not active.",
+        });
+      }
+
+      // --------------------------------------------------------
+      // Attach database user
+      // --------------------------------------------------------
+
       req.dbUser = {
         ...user,
         status,
@@ -46,7 +78,10 @@ const verifyUser = (usersCollection) => {
 
       return next();
     } catch (error) {
-      console.error("VERIFY USER ERROR:", error?.message || error);
+      console.error(
+        "VERIFY USER ERROR:",
+        error?.stack || error?.message || error,
+      );
 
       return res.status(500).json({
         success: false,
