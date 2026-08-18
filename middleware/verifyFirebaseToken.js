@@ -1,26 +1,29 @@
-import { firebaseAdminAuth } from "../config/firebaseAdmin.js";
+import "../config/firebaseAdmin.js";
+import { getAuth } from "firebase-admin/auth";
 
 const verifyFirebaseToken = async (req, res, next) => {
   try {
-    const authorization = req.headers.authorization || "";
+    const authorization = req.headers.authorization;
 
-    if (!authorization.startsWith("Bearer ")) {
+    if (!authorization?.startsWith("Bearer ")) {
       return res.status(401).json({
         success: false,
         message: "Unauthorized. Firebase authentication token is missing.",
       });
     }
 
-    const token = authorization.substring(7).trim();
+    const idToken = authorization.slice(7).trim();
 
-    if (!token) {
+    if (!idToken) {
       return res.status(401).json({
         success: false,
         message: "Unauthorized. Firebase authentication token is missing.",
       });
     }
 
-    req.firebaseUser = await firebaseAdminAuth.verifyIdToken(token);
+    const decodedToken = await getAuth().verifyIdToken(idToken);
+
+    req.firebaseUser = decodedToken;
 
     next();
   } catch (error) {

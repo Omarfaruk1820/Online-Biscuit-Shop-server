@@ -18,7 +18,7 @@ import verifyUser from "../middleware/verifyUser.js";
 import verifyAdmin from "../middleware/verifyAdmin.js";
 
 // ============================================================
-// EXPRESS APP
+
 // ============================================================
 
 const app = express();
