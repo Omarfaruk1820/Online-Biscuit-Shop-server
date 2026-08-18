@@ -41,7 +41,7 @@ const usersRoutes = (usersCollection) => {
 
   // ============================================================
   // POST /users
-  // Create or update user
+
   // ============================================================
   router.post("/", verifyFirebaseToken, async (req, res) => {
     try {
