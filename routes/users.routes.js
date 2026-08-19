@@ -122,18 +122,7 @@ const usersRoutes = (usersCollection) => {
     };
   };
 
-  // ==========================================================
-  // POST /users
-  //
-  // Firebase authenticated user
-  //        ↓
-  // Verify Firebase token
-  //        ↓
-  // Find MongoDB user
-  //        ↓
-  // Create / update user
-  //
-  // ==========================================================
+ 
 
   router.post("/", verifyFirebaseToken, async (req, res) => {
     try {

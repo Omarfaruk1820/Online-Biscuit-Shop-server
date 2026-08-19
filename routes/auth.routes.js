@@ -104,6 +104,70 @@ const authRoutes = (usersCollection) => {
   };
 
   // ==========================================================
+  // GET FIREBASE USER DATA
+  // ==========================================================
+
+  const getFirebaseUserData = (firebaseUser, body = {}) => {
+    const uid = normalizeString(firebaseUser?.uid);
+
+    const email = normalizeEmail(firebaseUser?.email);
+
+    const name = normalizeString(
+      firebaseUser?.name || firebaseUser?.displayName || body?.name || "",
+    );
+
+    const photo = normalizeString(
+      firebaseUser?.picture ||
+        firebaseUser?.photoURL ||
+        body?.photo ||
+        body?.photoURL ||
+        "",
+    );
+
+    const emailVerified = Boolean(
+      firebaseUser?.email_verified ?? firebaseUser?.emailVerified,
+    );
+
+    const providerId =
+      firebaseUser?.providerData?.[0]?.providerId || "password";
+
+    const provider = normalizeProvider(providerId);
+
+    return {
+      uid,
+      email,
+      name: name.slice(0, 100),
+      photo,
+      emailVerified,
+      provider,
+    };
+  };
+
+  // ==========================================================
+  // FIND USER
+  // ==========================================================
+
+  const findUserByFirebaseIdentity = async ({ uid, email }) => {
+    let user = await usersCollection.findOne(
+      { uid },
+      {
+        projection: userProjection,
+      },
+    );
+
+    if (!user && email) {
+      user = await usersCollection.findOne(
+        { email },
+        {
+          projection: userProjection,
+        },
+      );
+    }
+
+    return user;
+  };
+
+  // ==========================================================
   // POST /auth/jwt
   //
   // Firebase ID Token
@@ -117,14 +181,13 @@ const authRoutes = (usersCollection) => {
   // Application JWT
   //       ↓
   // HTTP-only cookie
-  //
   // ==========================================================
 
   router.post("/jwt", verifyFirebaseToken, async (req, res) => {
     try {
-      // ======================================================
+      // ------------------------------------------------------
       // FIREBASE USER
-      // ======================================================
+      // ------------------------------------------------------
 
       const firebaseUser = req.firebaseUser;
 
@@ -135,44 +198,30 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      const firebaseUid = normalizeString(firebaseUser.uid);
+      const { uid, email, emailVerified, provider } =
+        getFirebaseUserData(firebaseUser);
 
-      const firebaseEmail = normalizeEmail(firebaseUser.email);
+      // ------------------------------------------------------
+      // VALIDATE FIREBASE DATA
+      // ------------------------------------------------------
 
-      if (!firebaseUid) {
+      if (!uid) {
         return res.status(401).json({
           success: false,
           message: "Firebase user UID is missing.",
         });
       }
 
-      if (!firebaseEmail) {
+      if (!email) {
         return res.status(401).json({
           success: false,
           message: "Firebase account email is missing.",
         });
       }
 
-      // ======================================================
+      // ------------------------------------------------------
       // EMAIL VERIFICATION
-      // ======================================================
-
-      const emailVerified = Boolean(
-        firebaseUser.email_verified ?? firebaseUser.emailVerified,
-      );
-
-      // ======================================================
-      // PROVIDER
-      // ======================================================
-
-      const firebaseProvider =
-        firebaseUser.providerData?.[0]?.providerId || "password";
-
-      const provider = normalizeProvider(firebaseProvider);
-
-      // ======================================================
-      // PASSWORD ACCOUNT VERIFICATION
-      // ======================================================
+      // ------------------------------------------------------
 
       if (provider === "password" && !emailVerified) {
         return res.status(403).json({
@@ -182,48 +231,30 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ======================================================
-      // FIND USER BY UID
-      // ======================================================
+      // ------------------------------------------------------
+      // FIND USER
+      // ------------------------------------------------------
 
-      let user = await usersCollection.findOne(
-        {
-          uid: firebaseUid,
-        },
-        {
-          projection: userProjection,
-        },
-      );
+      const user = await findUserByFirebaseIdentity({
+        uid,
+        email,
+      });
 
-      // ======================================================
-      // FALLBACK: FIND BY EMAIL
-      // ======================================================
-
-      if (!user) {
-        user = await usersCollection.findOne(
-          {
-            email: firebaseEmail,
-          },
-          {
-            projection: userProjection,
-          },
-        );
-      }
-
-      // ======================================================
+      // ------------------------------------------------------
       // USER MUST EXIST
-      // ======================================================
+      // ------------------------------------------------------
 
       if (!user) {
         return res.status(404).json({
           success: false,
-          message: "User account was not found.",
+          code: "user/not-found",
+          message: "User account was not found. Please register first.",
         });
       }
 
-      // ======================================================
+      // ------------------------------------------------------
       // DATABASE EMAIL
-      // ======================================================
+      // ------------------------------------------------------
 
       const databaseEmail = normalizeEmail(user.email);
 
@@ -234,31 +265,31 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ======================================================
+      // ------------------------------------------------------
       // EMAIL CONSISTENCY
-      // ======================================================
+      // ------------------------------------------------------
 
-      if (databaseEmail !== firebaseEmail) {
+      if (databaseEmail !== email) {
         return res.status(403).json({
           success: false,
           message: "Authentication email does not match the user account.",
         });
       }
 
-      // ======================================================
+      // ------------------------------------------------------
       // UID CONSISTENCY
-      // ======================================================
+      // ------------------------------------------------------
 
-      if (user.uid && normalizeString(user.uid) !== firebaseUid) {
+      if (user.uid && normalizeString(user.uid) !== uid) {
         return res.status(403).json({
           success: false,
           message: "Authentication identity does not match the user account.",
         });
       }
 
-      // ======================================================
+      // ------------------------------------------------------
       // ACCOUNT STATUS
-      // ======================================================
+      // ------------------------------------------------------
 
       const status = normalizeStatus(user.status);
 
@@ -276,36 +307,27 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ======================================================
-      // UPDATE USER LOGIN DATA
-      // ======================================================
+      // ------------------------------------------------------
+      // UPDATE LOGIN DATA
+      // ------------------------------------------------------
 
       const now = new Date();
 
       const updateData = {
-        uid: firebaseUid,
-
-        email: firebaseEmail,
-
+        uid,
+        email,
         emailVerified,
-
         provider,
-
         lastLogin: now,
-
         updatedAt: now,
       };
 
-      // ======================================================
-      // UPDATE FIREBASE PROFILE IF AVAILABLE
-      // ======================================================
-
       const firebaseName = normalizeString(
-        firebaseUser.name || firebaseUser.displayName || "",
+        firebaseUser?.name || firebaseUser?.displayName || "",
       );
 
       const firebasePhoto = normalizeString(
-        firebaseUser.picture || firebaseUser.photoURL || "",
+        firebaseUser?.picture || firebaseUser?.photoURL || "",
       );
 
       if (firebaseName) {
@@ -325,9 +347,9 @@ const authRoutes = (usersCollection) => {
         },
       );
 
-      // ======================================================
+      // ------------------------------------------------------
       // GET UPDATED USER
-      // ======================================================
+      // ------------------------------------------------------
 
       const updatedUser = await usersCollection.findOne(
         {
@@ -345,29 +367,27 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ======================================================
+      // ------------------------------------------------------
       // CREATE APPLICATION JWT
-      // ======================================================
+      // ------------------------------------------------------
 
       const token = createToken({
         email: databaseEmail,
       });
 
-      // ======================================================
+      // ------------------------------------------------------
       // SET HTTP-ONLY COOKIE
-      // ======================================================
+      // ------------------------------------------------------
 
       res.cookie("token", token, cookieOptions);
 
-      // ======================================================
+      // ------------------------------------------------------
       // SUCCESS
-      // ======================================================
+      // ------------------------------------------------------
 
       return res.status(200).json({
         success: true,
-
         message: "Authentication successful.",
-
         user: getSafeUser(updatedUser),
       });
     } catch (error) {
@@ -384,6 +404,212 @@ const authRoutes = (usersCollection) => {
   });
 
   // ==========================================================
+  // POST /auth/register
+  //
+  // Firebase account already created
+  //       ↓
+  // Verify Firebase ID Token
+  //       ↓
+  // Save / synchronize MongoDB user
+  //
+  // IMPORTANT:
+  // This route does NOT create the Firebase account.
+  // Firebase account creation happens in AuthProvider.jsx.
+  // ==========================================================
+
+  router.post("/register", verifyFirebaseToken, async (req, res) => {
+    try {
+      const firebaseUser = req.firebaseUser;
+
+      if (!firebaseUser?.uid) {
+        return res.status(401).json({
+          success: false,
+          message: "Firebase authentication failed.",
+        });
+      }
+
+      const { uid, email, name, photo, emailVerified, provider } =
+        getFirebaseUserData(firebaseUser, req.body);
+
+      // ------------------------------------------------------
+      // VALIDATE FIREBASE DATA
+      // ------------------------------------------------------
+
+      if (!uid) {
+        return res.status(401).json({
+          success: false,
+          message: "Firebase UID is missing.",
+        });
+      }
+
+      if (!email) {
+        return res.status(401).json({
+          success: false,
+          message: "Firebase email is missing.",
+        });
+      }
+
+      // ------------------------------------------------------
+      // CHECK EXISTING USER
+      // ------------------------------------------------------
+
+      const existingUser = await findUserByFirebaseIdentity({
+        uid,
+        email,
+      });
+
+      // ------------------------------------------------------
+      // EXISTING USER
+      // ------------------------------------------------------
+
+      if (existingUser) {
+        // ----------------------------------------------------
+        // EMAIL MISMATCH
+        // ----------------------------------------------------
+
+        if (
+          existingUser.email &&
+          normalizeEmail(existingUser.email) !== email
+        ) {
+          return res.status(409).json({
+            success: false,
+            message: "This Firebase account is linked to another email.",
+          });
+        }
+
+        // ----------------------------------------------------
+        // UID MISMATCH
+        // ----------------------------------------------------
+
+        if (existingUser.uid && normalizeString(existingUser.uid) !== uid) {
+          return res.status(409).json({
+            success: false,
+            message: "This email is already linked to another account.",
+          });
+        }
+
+        // ----------------------------------------------------
+        // DO NOT CHANGE ROLE
+        // ----------------------------------------------------
+
+        const now = new Date();
+
+        const updateData = {
+          uid,
+          email,
+          emailVerified,
+          provider,
+          updatedAt: now,
+        };
+
+        if (name) {
+          updateData.name = name;
+        }
+
+        if (photo) {
+          updateData.photo = photo;
+        }
+
+        await usersCollection.updateOne(
+          {
+            _id: existingUser._id,
+          },
+          {
+            $set: updateData,
+          },
+        );
+
+        const updatedUser = await usersCollection.findOne(
+          {
+            _id: existingUser._id,
+          },
+          {
+            projection: userProjection,
+          },
+        );
+
+        return res.status(200).json({
+          success: true,
+          message: "User account synchronized successfully.",
+          user: getSafeUser(updatedUser),
+        });
+      }
+
+      // ------------------------------------------------------
+      // CREATE NEW USER
+      // ------------------------------------------------------
+
+      const now = new Date();
+
+      const newUser = {
+        uid,
+
+        name,
+
+        email,
+
+        photo,
+
+        emailVerified,
+
+        // Never accept role from frontend.
+        role: "user",
+
+        status: "active",
+
+        provider,
+
+        createdAt: now,
+
+        updatedAt: now,
+
+        lastLogin: null,
+      };
+
+      const result = await usersCollection.insertOne(newUser);
+
+      if (!result.acknowledged) {
+        return res.status(500).json({
+          success: false,
+          message: "Failed to create user account.",
+        });
+      }
+
+      const createdUser = {
+        ...newUser,
+        _id: result.insertedId,
+      };
+
+      return res.status(201).json({
+        success: true,
+        message: "User account created successfully.",
+        user: getSafeUser(createdUser),
+      });
+    } catch (error) {
+      console.error(
+        "POST /auth/register ERROR:",
+        error?.stack || error?.message || error,
+      );
+
+      // ------------------------------------------------------
+      // DUPLICATE KEY
+      // ------------------------------------------------------
+
+      if (error?.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          message: "A user account with this information already exists.",
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to create user account.",
+      });
+    }
+  });
+
+  // ==========================================================
   // GET /auth/me
   //
   // Application JWT cookie
@@ -393,7 +619,6 @@ const authRoutes = (usersCollection) => {
   // verifyUser
   //       ↓
   // MongoDB user
-  //
   // ==========================================================
 
   router.get(
@@ -411,9 +636,9 @@ const authRoutes = (usersCollection) => {
           });
         }
 
-        // ======================================================
+        // ------------------------------------------------------
         // ACCOUNT STATUS
-        // ======================================================
+        // ------------------------------------------------------
 
         const status = normalizeStatus(user.status);
 
@@ -431,13 +656,12 @@ const authRoutes = (usersCollection) => {
           });
         }
 
-        // ======================================================
-        // RETURN USER
-        // ======================================================
+        // ------------------------------------------------------
+        // SUCCESS
+        // ------------------------------------------------------
 
         return res.status(200).json({
           success: true,
-
           user: getSafeUser(user),
         });
       } catch (error) {

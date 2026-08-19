@@ -350,7 +350,6 @@ const mountRoutes = () => {
   // ==========================================================
   // CARTS
   // ==========================================================
-
   app.use(
     "/carts",
     cartsRoutes(cartsCollection, productsCollection, verifyToken),
