@@ -11,7 +11,7 @@ const verifyToken = (req, res, next) => {
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized. Authentication token is missing.",
+        message: "Authentication token is missing.",
       });
     }
 
@@ -32,20 +32,12 @@ const verifyToken = (req, res, next) => {
       audience: "BiscuitShopClient",
     });
 
-    // ----------------------------------------------------------
-    // Validate token type
-    // ----------------------------------------------------------
-
     if (decoded?.type !== "access") {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized. Invalid token type.",
+        message: "Invalid access token.",
       });
     }
-
-    // ----------------------------------------------------------
-    // Validate email
-    // ----------------------------------------------------------
 
     const email =
       typeof decoded?.email === "string"
@@ -55,19 +47,15 @@ const verifyToken = (req, res, next) => {
     if (!email) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized. Invalid authentication token.",
+        message: "Invalid authentication token.",
       });
     }
-
-    // ----------------------------------------------------------
-    // Attach authenticated identity
-    // ----------------------------------------------------------
 
     req.user = {
       email,
     };
 
-    return next();
+    next();
   } catch (error) {
     console.error("VERIFY TOKEN ERROR:", {
       name: error?.name,

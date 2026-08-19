@@ -25,6 +25,40 @@ const usersRoutes = (usersCollection) => {
     return typeof email === "string" ? email.trim().toLowerCase() : "";
   };
 
+  const normalizeString = (value = "") => {
+    return typeof value === "string" ? value.trim() : "";
+  };
+
+  const normalizeProvider = (provider = "password") => {
+    const value = normalizeString(provider).toLowerCase();
+
+    if (value === "google.com") {
+      return "google.com";
+    }
+
+    return "password";
+  };
+
+  const normalizeStatus = (status = "active") => {
+    const value = normalizeString(status).toLowerCase();
+
+    if (value === "blocked") {
+      return "blocked";
+    }
+
+    return "active";
+  };
+
+  const normalizeRole = (role = "user") => {
+    const value = normalizeString(role).toLowerCase();
+
+    if (value === "admin") {
+      return "admin";
+    }
+
+    return "user";
+  };
+
   const isValidObjectId = (id) => {
     return typeof id === "string" && ObjectId.isValid(id);
   };
@@ -33,12 +67,17 @@ const usersRoutes = (usersCollection) => {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   };
 
+  // ==========================================================
+  // USER PROJECTION
+  // ==========================================================
+
   const userProjection = {
     _id: 1,
     uid: 1,
     name: 1,
     email: 1,
     photo: 1,
+    emailVerified: 1,
     role: 1,
     status: 1,
     provider: 1,
@@ -48,11 +87,51 @@ const usersRoutes = (usersCollection) => {
   };
 
   // ==========================================================
+  // SAFE USER
+  // ==========================================================
+
+  const getSafeUser = (user) => {
+    if (!user) {
+      return null;
+    }
+
+    return {
+      _id: user._id || null,
+
+      uid: normalizeString(user.uid),
+
+      name: normalizeString(user.name),
+
+      email: normalizeEmail(user.email),
+
+      photo: normalizeString(user.photo),
+
+      emailVerified: Boolean(user.emailVerified),
+
+      role: normalizeRole(user.role),
+
+      status: normalizeStatus(user.status),
+
+      provider: normalizeProvider(user.provider),
+
+      createdAt: user.createdAt || null,
+
+      updatedAt: user.updatedAt || null,
+
+      lastLogin: user.lastLogin || null,
+    };
+  };
+
+  // ==========================================================
   // POST /users
   //
   // Firebase authenticated user
   //        ↓
-  // MongoDB create/update
+  // Verify Firebase token
+  //        ↓
+  // Find MongoDB user
+  //        ↓
+  // Create / update user
   //
   // ==========================================================
 
@@ -71,9 +150,16 @@ const usersRoutes = (usersCollection) => {
         });
       }
 
-      const uid = String(firebaseUser.uid).trim();
+      const uid = normalizeString(firebaseUser.uid);
 
       const email = normalizeEmail(firebaseUser.email);
+
+      if (!uid) {
+        return res.status(401).json({
+          success: false,
+          message: "Firebase user UID is missing.",
+        });
+      }
 
       if (!email) {
         return res.status(400).json({
@@ -85,28 +171,60 @@ const usersRoutes = (usersCollection) => {
       // ========================================================
       // CLIENT PROFILE DATA
       // ========================================================
+      //
+      // AuthProvider sends:
+      //
+      // {
+      //   name,
+      //   photoURL
+      // }
+      //
+      // We also support `photo` for compatibility.
+      //
+      // ========================================================
 
-      const { name = "", photo = "" } = req.body || {};
+      const body = req.body || {};
 
-      const cleanName =
-        typeof name === "string" ? name.trim().slice(0, 100) : "";
+      const clientName = normalizeString(body.name);
 
-      const cleanPhoto = typeof photo === "string" ? photo.trim() : "";
+      const clientPhoto = normalizeString(body.photoURL || body.photo);
+
+      // ========================================================
+      // FIREBASE PROFILE
+      // ========================================================
+
+      const firebaseName = normalizeString(
+        firebaseUser.name || firebaseUser.displayName || "",
+      );
+
+      const firebasePhoto = normalizeString(
+        firebaseUser.picture || firebaseUser.photoURL || "",
+      );
+
+      // ========================================================
+      // FINAL PROFILE DATA
+      // ========================================================
+
+      const name = clientName || firebaseName;
+
+      const photo = clientPhoto || firebasePhoto;
+
+      // ========================================================
+      // EMAIL VERIFICATION
+      // ========================================================
+
+      const emailVerified = Boolean(
+        firebaseUser.email_verified ?? firebaseUser.emailVerified,
+      );
 
       // ========================================================
       // PROVIDER
       // ========================================================
-      // Firebase verified identity is the source of truth.
-      // Never trust provider sent by the client.
 
       const firebaseProvider =
         firebaseUser.providerData?.[0]?.providerId || "password";
 
-      const allowedProviders = ["password", "google.com"];
-
-      const provider = allowedProviders.includes(firebaseProvider)
-        ? firebaseProvider
-        : "password";
+      const provider = normalizeProvider(firebaseProvider);
 
       // ========================================================
       // TIMESTAMP
@@ -133,7 +251,6 @@ const usersRoutes = (usersCollection) => {
       // ========================================================
       // IDENTITY CONFLICT
       // ========================================================
-      // UID and email must belong to the same MongoDB user.
 
       if (
         userByUid &&
@@ -155,10 +272,10 @@ const usersRoutes = (usersCollection) => {
 
       if (existingUser) {
         // ------------------------------------------------------
-        // Existing UID belongs to another account
+        // Existing account belongs to another Firebase UID
         // ------------------------------------------------------
 
-        if (existingUser.uid && String(existingUser.uid).trim() !== uid) {
+        if (existingUser.uid && normalizeString(existingUser.uid) !== uid) {
           return res.status(409).json({
             success: false,
             message:
@@ -167,13 +284,10 @@ const usersRoutes = (usersCollection) => {
         }
 
         // ------------------------------------------------------
-        // Existing account status
+        // Account status
         // ------------------------------------------------------
 
-        const status =
-          typeof existingUser.status === "string" && existingUser.status.trim()
-            ? existingUser.status.trim().toLowerCase()
-            : "active";
+        const status = normalizeStatus(existingUser.status);
 
         if (status === "blocked") {
           return res.status(403).json({
@@ -183,25 +297,32 @@ const usersRoutes = (usersCollection) => {
         }
 
         // ------------------------------------------------------
-        // Update user
+        // Existing user update
         // ------------------------------------------------------
 
         const updateData = {
           uid,
           email,
+          emailVerified,
           provider,
           updatedAt: now,
           lastLogin: now,
         };
 
-        // Only update profile fields when values are available.
+        // ------------------------------------------------------
+        // Update name if available
+        // ------------------------------------------------------
 
-        if (cleanName) {
-          updateData.name = cleanName;
+        if (name) {
+          updateData.name = name.slice(0, 100);
         }
 
-        if (cleanPhoto) {
-          updateData.photo = cleanPhoto;
+        // ------------------------------------------------------
+        // Update photo if available
+        // ------------------------------------------------------
+
+        if (photo) {
+          updateData.photo = photo;
         }
 
         await usersCollection.updateOne(
@@ -213,9 +334,23 @@ const usersRoutes = (usersCollection) => {
           },
         );
 
+        // ------------------------------------------------------
+        // Get updated user
+        // ------------------------------------------------------
+
+        const updatedUser = await usersCollection.findOne(
+          {
+            _id: existingUser._id,
+          },
+          {
+            projection: userProjection,
+          },
+        );
+
         return res.status(200).json({
           success: true,
           message: "User synchronized successfully.",
+          user: getSafeUser(updatedUser),
         });
       }
 
@@ -226,11 +361,13 @@ const usersRoutes = (usersCollection) => {
       const newUser = {
         uid,
 
-        name: cleanName,
+        name: name.slice(0, 100),
 
         email,
 
-        photo: cleanPhoto,
+        photo,
+
+        emailVerified,
 
         provider,
 
@@ -245,15 +382,32 @@ const usersRoutes = (usersCollection) => {
         lastLogin: now,
       };
 
-      await usersCollection.insertOne(newUser);
+      const result = await usersCollection.insertOne(newUser);
+
+      if (!result.insertedId) {
+        return res.status(500).json({
+          success: false,
+          message: "Unable to create user account.",
+        });
+      }
 
       // ========================================================
-      // SUCCESS
+      // RETURN CREATED USER
       // ========================================================
+
+      const createdUser = await usersCollection.findOne(
+        {
+          _id: result.insertedId,
+        },
+        {
+          projection: userProjection,
+        },
+      );
 
       return res.status(201).json({
         success: true,
         message: "User created successfully.",
+        user: getSafeUser(createdUser),
       });
     } catch (error) {
       // ========================================================
@@ -314,9 +468,9 @@ const usersRoutes = (usersCollection) => {
 
         const query = {};
 
-        // ------------------------------------------------------
-        // Search
-        // ------------------------------------------------------
+        // ======================================================
+        // SEARCH
+        // ======================================================
 
         if (search) {
           const safeSearch = escapeRegex(search);
@@ -337,9 +491,9 @@ const usersRoutes = (usersCollection) => {
           ];
         }
 
-        // ------------------------------------------------------
-        // Sorting
-        // ------------------------------------------------------
+        // ======================================================
+        // SORT
+        // ======================================================
 
         const sortMap = {
           newest: {
@@ -369,9 +523,9 @@ const usersRoutes = (usersCollection) => {
 
         const sortOption = sortMap[sort] || sortMap.newest;
 
-        // ------------------------------------------------------
-        // Query
-        // ------------------------------------------------------
+        // ======================================================
+        // QUERY
+        // ======================================================
 
         const [users, total] = await Promise.all([
           usersCollection
@@ -390,7 +544,7 @@ const usersRoutes = (usersCollection) => {
         return res.status(200).json({
           success: true,
 
-          data: users,
+          data: users.map(getSafeUser),
 
           pagination: {
             page,
@@ -419,9 +573,6 @@ const usersRoutes = (usersCollection) => {
 
   // ==========================================================
   // GET /users/:email
-  //
-  // Authenticated user can only access own profile.
-  // Admin can access any user.
   // ==========================================================
 
   router.get(
@@ -441,14 +592,11 @@ const usersRoutes = (usersCollection) => {
 
         const currentEmail = normalizeEmail(req.dbUser?.email);
 
-        const currentRole =
-          typeof req.dbUser?.role === "string"
-            ? req.dbUser.role.trim().toLowerCase()
-            : "user";
+        const currentRole = normalizeRole(req.dbUser?.role);
 
-        // ------------------------------------------------------
-        // Non-admin can only access own account
-        // ------------------------------------------------------
+        // ======================================================
+        // ACCESS CONTROL
+        // ======================================================
 
         if (currentRole !== "admin" && requestedEmail !== currentEmail) {
           return res.status(403).json({
@@ -456,6 +604,10 @@ const usersRoutes = (usersCollection) => {
             message: "You are not authorized to access this user.",
           });
         }
+
+        // ======================================================
+        // FIND USER
+        // ======================================================
 
         const user = await usersCollection.findOne(
           {
@@ -475,7 +627,7 @@ const usersRoutes = (usersCollection) => {
 
         return res.status(200).json({
           success: true,
-          data: user,
+          user: getSafeUser(user),
         });
       } catch (error) {
         console.error(
@@ -713,9 +865,7 @@ const usersRoutes = (usersCollection) => {
 
         return res.status(200).json({
           success: true,
-
           deletedCount: result.deletedCount,
-
           message: "User deleted successfully.",
         });
       } catch (error) {

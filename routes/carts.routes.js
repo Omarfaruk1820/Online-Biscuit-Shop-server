@@ -1,227 +1,271 @@
 import { Router } from "express";
 import { ObjectId } from "mongodb";
+
 import calculateOrderSummary from "../utils/orderSummary.js";
+
+// ============================================================
+// CART ROUTES
+// ============================================================
 
 const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
   const router = Router();
 
-  // =========================================================
+  // ==========================================================
   // CONSTANTS
-  // =========================================================
+  // ==========================================================
 
-  const FREE_SHIPPING_THRESHOLD = 1000;
-  const SHIPPING_CHARGE = 60;
+  const MAX_QUANTITY = 99;
+  const MAX_CART_ITEMS = 100;
 
-  // =========================================================
+  // ==========================================================
   // HELPERS
-  // =========================================================
+  // ==========================================================
 
   const normalizeEmail = (email = "") => {
     return typeof email === "string" ? email.trim().toLowerCase() : "";
+  };
+
+  const getUserEmail = (req) => {
+    return normalizeEmail(req.user?.email);
   };
 
   const isValidObjectId = (id) => {
     return typeof id === "string" && ObjectId.isValid(id);
   };
 
-  const toSafeNumber = (value, fallback = 0) => {
+  const round = (value) => {
     const number = Number(value);
 
-    return Number.isFinite(number) ? number : fallback;
+    return Number.isFinite(number) ? Number(number.toFixed(2)) : 0;
   };
 
-  const round = (value) => {
-    return Number(toSafeNumber(value).toFixed(2));
+  const getProductName = (product) => {
+    return typeof product?.name === "string" && product.name.trim()
+      ? product.name.trim()
+      : "Unknown Product";
   };
 
-  const calculateItemValues = (product, quantity) => {
-    if (!product) {
-      throw new Error("Product not found.");
+  const getProductImage = (product) => {
+    return typeof product?.image === "string" ? product.image.trim() : "";
+  };
+
+  const getProductBrand = (product) => {
+    return typeof product?.brand === "string" ? product.brand.trim() : "";
+  };
+
+  const getProductCategory = (product) => {
+    return typeof product?.category === "string"
+      ? product.category.trim().toLowerCase()
+      : "";
+  };
+
+  const getProductSku = (product) => {
+    return typeof product?.sku === "string" ? product.sku.trim() : "";
+  };
+
+  // ==========================================================
+  // PRODUCT PROJECTION
+  // ==========================================================
+
+  const PRODUCT_PROJECTION = {
+    sku: 1,
+    name: 1,
+    image: 1,
+    brand: 1,
+    category: 1,
+    weight: 1,
+    price: 1,
+    discount: 1,
+    stock: 1,
+  };
+
+  // ==========================================================
+  // GET CURRENT PRODUCT
+  // ==========================================================
+
+  const getProduct = async (productId) => {
+    return productsCollection.findOne(
+      {
+        _id: productId,
+      },
+      {
+        projection: PRODUCT_PROJECTION,
+      },
+    );
+  };
+
+  // ==========================================================
+  // CALCULATE PRODUCT PRICE
+  // ==========================================================
+
+  const calculateProductPrice = (product) => {
+    const productName = getProductName(product);
+
+    const price = Number(product?.price);
+
+    if (!Number.isFinite(price) || price < 0) {
+      throw new Error(`Invalid price for "${productName}".`);
     }
 
-    const safeQuantity = Number(quantity);
+    const discount = Number(product?.discount ?? 0);
 
-    if (!Number.isInteger(safeQuantity) || safeQuantity < 1) {
-      throw new Error("Quantity must be a positive integer.");
+    if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+      throw new Error(`Invalid discount for "${productName}".`);
     }
 
-    const price = Math.max(0, toSafeNumber(product.price));
+    const safePrice = round(price);
+    const safeDiscount = round(discount);
 
-    const discount = Math.min(100, Math.max(0, toSafeNumber(product.discount)));
-
-    const finalPrice = round(price - (price * discount) / 100);
-
-    const subtotal = round(finalPrice * safeQuantity);
+    const finalPrice = round(safePrice - (safePrice * safeDiscount) / 100);
 
     return {
+      price: safePrice,
+      discount: safeDiscount,
+      finalPrice,
+    };
+  };
+
+  // ==========================================================
+  // VALIDATE STOCK
+  // ==========================================================
+
+  const validateStock = (product, quantity) => {
+    const productName = getProductName(product);
+
+    const stock = Number(product?.stock);
+
+    if (!Number.isInteger(stock) || stock < 0) {
+      throw new Error(`Invalid stock for "${productName}".`);
+    }
+
+    if (stock === 0) {
+      throw new Error(`"${productName}" is currently out of stock.`);
+    }
+
+    if (quantity > stock) {
+      throw new Error(`Only ${stock} item(s) available for "${productName}".`);
+    }
+
+    return stock;
+  };
+
+  // ==========================================================
+  // BUILD CART ITEM
+  // ==========================================================
+
+  const buildCartItem = ({ email, product, quantity, existingItem = null }) => {
+    const { price, discount, finalPrice } = calculateProductPrice(product);
+
+    const subtotal = round(finalPrice * quantity);
+
+    const now = new Date();
+
+    return {
+      ...(existingItem
+        ? {}
+        : {
+            email,
+            productId: product._id,
+            createdAt: now,
+          }),
+
+      sku: getProductSku(product),
+      name: getProductName(product),
+      image: getProductImage(product),
+      brand: getProductBrand(product),
+      category: getProductCategory(product),
+      weight: product?.weight ?? "",
+
       price,
       discount,
       finalPrice,
+
+      quantity,
       subtotal,
+
+      updatedAt: now,
     };
   };
 
-  const calculateCartSummary = (cart = []) => {
-    if (!Array.isArray(cart) || cart.length === 0) {
-      return {
-        totalItems: 0,
-        totalQuantity: 0,
-        subtotal: 0,
-        totalDiscount: 0,
-        shipping: 0,
-        tax: 0,
-        grandTotal: 0,
-      };
-    }
-
-    /*
-     * Use the shared order-summary utility.
-     *
-     * Your calculateOrderSummary.js expects:
-     * price
-     * finalPrice
-     * quantity
-     */
-    const items = cart.map((item) => ({
-      price: Math.max(0, toSafeNumber(item?.price)),
-
-      finalPrice: Math.max(0, toSafeNumber(item?.finalPrice, item?.price)),
-
-      quantity: Number(item?.quantity),
-    }));
-
-    const summary = calculateOrderSummary(items);
-
-    const subtotal = round(summary?.subtotal);
-    const totalDiscount = round(summary?.totalDiscount);
-
-    /*
-     * Keep shipping calculation centralized and safe.
-     *
-     * If your orderSummary utility already handles
-     * shipping, make sure both utilities use exactly
-     * the same rules.
-     */
-    const shipping =
-      subtotal >= FREE_SHIPPING_THRESHOLD
-        ? 0
-        : cart.length > 0
-          ? SHIPPING_CHARGE
-          : 0;
-
-    const tax = round(summary?.tax);
-
-    const grandTotal = round(subtotal + shipping + tax);
-
-    return {
-      totalItems: Number(summary?.totalItems) || 0,
-
-      totalQuantity: Number(summary?.totalQuantity) || 0,
-
-      subtotal,
-
-      totalDiscount,
-
-      shipping,
-
-      tax,
-
-      grandTotal,
-    };
-  };
-
-  const getAuthenticatedEmail = (req) => {
-    return normalizeEmail(req.user?.email);
-  };
-
-  // =========================================================
+  // ==========================================================
   // GET /carts
-  // Get Current User Cart
-  // =========================================================
+  // ==========================================================
 
-  router.get("/", verifyToken, async (req, res) => {
-    console.log(req.user?.email);
-    console.log("this is the meail",email)
-    console.log('this is the data',data)
-    try {
-      const email = getAuthenticatedEmail(req);
+router.get("/", verifyToken, async (req, res) => {
+  try {
+    console.log("GET /carts started");
 
-      if (!email) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized.",
-        });
-      }
+    const email = getUserEmail(req);
 
-      // =====================================================
-      // FETCH CART
-      // =====================================================
+    console.log("Cart email:", email);
 
-      const cart = await cartsCollection
-        .find(
-          { email },
-          {
-            projection: {
-              email: 0,
-            },
-          },
-        )
-        .sort({
-          createdAt: -1,
-        })
-        .toArray();
-
-      // =====================================================
-      // CALCULATE SUMMARY
-      // =====================================================
-
-      const summary = calculateCartSummary(cart);
-
-      // =====================================================
-      // SAFE RESPONSE
-      // =====================================================
-
-      return res.status(200).json({
-        success: true,
-
-        count: cart.length,
-
-        data: cart,
-
-        summary: {
-          totalItems: Number(summary.totalItems) || 0,
-
-          totalQuantity: Number(summary.totalQuantity) || 0,
-
-          subtotal: Number(summary.subtotal) || 0,
-
-          totalDiscount: Number(summary.totalDiscount) || 0,
-
-          shipping: Number(summary.shipping) || 0,
-
-          tax: Number(summary.tax) || 0,
-
-          grandTotal: Number(summary.grandTotal) || 0,
-        },
-      });
-    } catch (error) {
-      console.error("GET /carts ERROR:", error?.message || error);
-
-      return res.status(500).json({
+    if (!email) {
+      return res.status(401).json({
         success: false,
-        message: "Failed to load cart.",
+        message: "Unauthorized.",
       });
     }
-  });
 
-  // =========================================================
+    if (!cartsCollection) {
+      throw new Error("cartsCollection is not initialized.");
+    }
+
+    console.log("cartsCollection available");
+
+    const cart = await cartsCollection
+      .find(
+        { email },
+        {
+          projection: {
+            email: 0,
+          },
+        },
+      )
+      .sort({
+        createdAt: -1,
+      })
+      .toArray();
+
+    console.log("Cart documents:", cart.length);
+
+    const summary = calculateOrderSummary(cart);
+
+    console.log("Cart summary:", summary);
+
+    return res.status(200).json({
+      success: true,
+      count: cart.length,
+      data: cart,
+      summary: {
+        totalItems: Number(summary?.totalItems) || 0,
+        totalQuantity: Number(summary?.totalQuantity) || 0,
+        subtotal: round(summary?.subtotal),
+        totalDiscount: round(summary?.totalDiscount),
+        shipping: round(summary?.shipping),
+        tax: round(summary?.tax),
+        grandTotal: round(summary?.grandTotal),
+      },
+    });
+  } catch (error) {
+    console.error("=================================");
+    console.error("GET /carts ERROR");
+    console.error(error?.stack || error);
+    console.error("=================================");
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load cart.",
+    });
+  }
+});
+
+  // ==========================================================
   // GET /carts/count
-  // Get Current User Cart Item Count
-  // =========================================================
+  // ==========================================================
 
   router.get("/count", verifyToken, async (req, res) => {
     try {
-      const email = getAuthenticatedEmail(req);
+      const email = getUserEmail(req);
 
       if (!email) {
         return res.status(401).json({
@@ -236,10 +280,10 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
       return res.status(200).json({
         success: true,
-        count: Number(count) || 0,
+        count,
       });
     } catch (error) {
-      console.error("GET /carts/count ERROR:", error?.message || error);
+      console.error("GET /carts/count ERROR:", error?.stack || error);
 
       return res.status(500).json({
         success: false,
@@ -248,13 +292,13 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     }
   });
 
+  // ==========================================================
+  // POST /carts
+  // ==========================================================
+
   router.post("/", verifyToken, async (req, res) => {
     try {
-      // ============================================================
-      // AUTHORIZATION
-      // ============================================================
-
-      const email = normalizeEmail(req.user?.email);
+      const email = getUserEmail(req);
 
       if (!email) {
         return res.status(401).json({
@@ -263,11 +307,11 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // ============================================================
-      // REQUEST BODY
-      // ============================================================
-
       const { productId, quantity } = req.body || {};
+
+      // ------------------------------------------------------
+      // PRODUCT ID
+      // ------------------------------------------------------
 
       if (!productId) {
         return res.status(400).json({
@@ -283,39 +327,26 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
+      // ------------------------------------------------------
+      // QUANTITY
+      // ------------------------------------------------------
+
       const qty = Number(quantity);
 
-      if (!Number.isInteger(qty) || qty < 1 || qty > 99) {
+      if (!Number.isInteger(qty) || qty < 1 || qty > MAX_QUANTITY) {
         return res.status(400).json({
           success: false,
-          message: "Quantity must be between 1 and 99.",
+          message: `Quantity must be between 1 and ${MAX_QUANTITY}.`,
         });
       }
 
       const productObjectId = new ObjectId(productId);
 
-      // ============================================================
-      // GET LATEST PRODUCT FROM DATABASE
-      // ============================================================
+      // ------------------------------------------------------
+      // PRODUCT
+      // ------------------------------------------------------
 
-      const product = await productsCollection.findOne(
-        {
-          _id: productObjectId,
-        },
-        {
-          projection: {
-            sku: 1,
-            name: 1,
-            image: 1,
-            brand: 1,
-            category: 1,
-            weight: 1,
-            price: 1,
-            discount: 1,
-            stock: 1,
-          },
-        },
-      );
+      const product = await getProduct(productObjectId);
 
       if (!product) {
         return res.status(404).json({
@@ -324,119 +355,16 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // ============================================================
-      // PRODUCT INFORMATION
-      // ============================================================
+      // ------------------------------------------------------
+      // EXISTING ITEM
+      // ------------------------------------------------------
 
-      const productName =
-        typeof product.name === "string" && product.name.trim()
-          ? product.name.trim()
-          : "Unknown Product";
+      const existingItem = await cartsCollection.findOne({
+        email,
+        productId: productObjectId,
+      });
 
-      const productImage =
-        typeof product.image === "string" ? product.image.trim() : "";
-
-      const productBrand =
-        typeof product.brand === "string" ? product.brand.trim() : "";
-
-      const productCategory =
-        typeof product.category === "string" ? product.category.trim() : "";
-
-      const productWeight =
-        product.weight !== undefined && product.weight !== null
-          ? product.weight
-          : "";
-
-      const productSku =
-        typeof product.sku === "string" ? product.sku.trim() : "";
-
-      // ============================================================
-      // PRICE VALIDATION
-      // ============================================================
-
-      const price = Number(product.price);
-
-      if (!Number.isFinite(price) || price < 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid price for "${productName}".`,
-        });
-      }
-
-      const safePrice = Number(price.toFixed(2));
-
-      // ============================================================
-      // DISCOUNT VALIDATION
-      // ============================================================
-
-      const discount = Number(product.discount ?? 0);
-
-      if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid discount for "${productName}".`,
-        });
-      }
-
-      const safeDiscount = Number(discount.toFixed(2));
-
-      // ============================================================
-      // STOCK VALIDATION
-      // ============================================================
-
-      const stock = Number(product.stock);
-
-      if (!Number.isInteger(stock) || stock < 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid stock for "${productName}".`,
-        });
-      }
-
-      if (stock === 0) {
-        return res.status(400).json({
-          success: false,
-          message: `"${productName}" is currently out of stock.`,
-        });
-      }
-
-      if (qty > stock) {
-        return res.status(400).json({
-          success: false,
-          message: `Only ${stock} item(s) available for "${productName}".`,
-        });
-      }
-
-      // ============================================================
-      // CALCULATE CURRENT FINAL PRICE
-      // ============================================================
-
-      const finalPrice = Number(
-        (safePrice - (safePrice * safeDiscount) / 100).toFixed(2),
-      );
-
-      // ============================================================
-      // CHECK EXISTING CART ITEM
-      // ============================================================
-
-      const existingItem = await cartsCollection.findOne(
-        {
-          email,
-          productId: productObjectId,
-        },
-        {
-          projection: {
-            _id: 1,
-            email: 1,
-            productId: 1,
-            quantity: 1,
-          },
-        },
-      );
-
-      // ============================================================
-      // UPDATE EXISTING CART ITEM
-      // ============================================================
+      let newQuantity = qty;
 
       if (existingItem) {
         const existingQuantity = Number(existingItem.quantity);
@@ -448,42 +376,38 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
           });
         }
 
-        const newQuantity = existingQuantity + qty;
+        newQuantity = existingQuantity + qty;
 
-        // ----------------------------------------------------------
-        // MAXIMUM QUANTITY
-        // ----------------------------------------------------------
-
-        if (newQuantity > 99) {
+        if (newQuantity > MAX_QUANTITY) {
           return res.status(400).json({
             success: false,
-            message: "Maximum quantity per product is 99.",
+            message: `Maximum quantity per product is ${MAX_QUANTITY}.`,
           });
         }
+      }
 
-        // ----------------------------------------------------------
-        // STOCK VALIDATION
-        // ----------------------------------------------------------
+      // ------------------------------------------------------
+      // STOCK
+      // ------------------------------------------------------
 
-        if (newQuantity > stock) {
-          return res.status(400).json({
-            success: false,
-            message: `Only ${stock} item(s) available for "${productName}".`,
-          });
-        }
+      validateStock(product, newQuantity);
 
-        // ----------------------------------------------------------
-        // CALCULATE NEW SUBTOTAL
-        // ----------------------------------------------------------
+      // ------------------------------------------------------
+      // BUILD ITEM
+      // ------------------------------------------------------
 
-        const newSubtotal = Number((finalPrice * newQuantity).toFixed(2));
+      const cartItem = buildCartItem({
+        email,
+        product,
+        quantity: newQuantity,
+        existingItem,
+      });
 
-        const now = new Date();
+      // ------------------------------------------------------
+      // UPDATE EXISTING
+      // ------------------------------------------------------
 
-        // ----------------------------------------------------------
-        // UPDATE CART
-        // ----------------------------------------------------------
-
+      if (existingItem) {
         const result = await cartsCollection.updateOne(
           {
             _id: existingItem._id,
@@ -491,29 +415,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
             productId: productObjectId,
           },
           {
-            $set: {
-              sku: productSku,
-              name: productName,
-              image: productImage,
-              brand: productBrand,
-              category: productCategory,
-              weight: productWeight,
-
-              price: safePrice,
-              discount: safeDiscount,
-              finalPrice,
-
-              quantity: newQuantity,
-              subtotal: newSubtotal,
-
-              updatedAt: now,
-            },
+            $set: cartItem,
           },
         );
-
-        // ----------------------------------------------------------
-        // UPDATE FAILED
-        // ----------------------------------------------------------
 
         if (!result.acknowledged) {
           return res.status(500).json({
@@ -529,11 +433,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
           });
         }
 
-        // ----------------------------------------------------------
-        // GET UPDATED CART ITEM
-        // ----------------------------------------------------------
-
-        const updatedCartItem = await cartsCollection.findOne({
+        const updated = await cartsCollection.findOne({
           _id: existingItem._id,
           email,
         });
@@ -541,44 +441,13 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         return res.status(200).json({
           success: true,
           message: "Cart updated successfully.",
-          data: updatedCartItem,
+          data: updated,
         });
       }
 
-      // ============================================================
-      // CREATE NEW CART ITEM
-      // ============================================================
-
-      const now = new Date();
-
-      const subtotal = Number((finalPrice * qty).toFixed(2));
-
-      const cartItem = {
-        email,
-
-        productId: productObjectId,
-
-        sku: productSku,
-        name: productName,
-        image: productImage,
-        brand: productBrand,
-        category: productCategory,
-        weight: productWeight,
-
-        price: safePrice,
-        discount: safeDiscount,
-        finalPrice,
-
-        quantity: qty,
-        subtotal,
-
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      // ============================================================
-      // INSERT CART ITEM
-      // ============================================================
+      // ------------------------------------------------------
+      // INSERT NEW
+      // ------------------------------------------------------
 
       const result = await cartsCollection.insertOne(cartItem);
 
@@ -589,11 +458,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // ============================================================
-      // SUCCESS
-      // ============================================================
-
-      const createdCartItem = {
+      const created = {
         ...cartItem,
         _id: result.insertedId,
       };
@@ -601,26 +466,32 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
       return res.status(201).json({
         success: true,
         message: "Product added to cart successfully.",
-        data: createdCartItem,
+        data: created,
       });
     } catch (error) {
-      // ============================================================
-      // DUPLICATE CART ITEM
-      // ============================================================
-
       if (error?.code === 11000) {
         return res.status(409).json({
           success: false,
-          message:
-            "This product is already in your cart. Please refresh and try again.",
+          message: "This product is already in your cart.",
         });
       }
 
-      // ============================================================
-      // SERVER ERROR
-      // ============================================================
+      const message = error?.message || "";
 
-      console.error("POST /carts ERROR:", error?.message || error);
+      if (
+        message.includes("currently out of stock") ||
+        message.includes("Only ") ||
+        message.includes("Invalid price") ||
+        message.includes("Invalid discount") ||
+        message.includes("Invalid stock")
+      ) {
+        return res.status(400).json({
+          success: false,
+          message,
+        });
+      }
+
+      console.error("POST /carts ERROR:", error?.stack || error);
 
       return res.status(500).json({
         success: false,
@@ -628,18 +499,14 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
       });
     }
   });
-  // =========================================================
+
+  // ==========================================================
   // PATCH /carts/:id
-  // Update Cart Item Quantity
-  // =========================================================
+  // ==========================================================
 
   router.patch("/:id", verifyToken, async (req, res) => {
     try {
-      // =========================================================
-      // AUTHORIZATION
-      // =========================================================
-
-      const email = normalizeEmail(req.user?.email);
+      const email = getUserEmail(req);
 
       if (!email) {
         return res.status(401).json({
@@ -647,10 +514,6 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
           message: "Unauthorized.",
         });
       }
-
-      // =========================================================
-      // CART ID
-      // =========================================================
 
       const { id } = req.params;
 
@@ -661,24 +524,24 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // =========================================================
-      // QUANTITY
-      // =========================================================
-
       const quantity = Number(req.body?.quantity);
 
-      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) {
+      if (
+        !Number.isInteger(quantity) ||
+        quantity < 1 ||
+        quantity > MAX_QUANTITY
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Quantity must be between 1 and 99.",
+          message: `Quantity must be between 1 and ${MAX_QUANTITY}.`,
         });
       }
 
       const cartId = new ObjectId(id);
 
-      // =========================================================
-      // FIND CART ITEM
-      // =========================================================
+      // ------------------------------------------------------
+      // CART ITEM
+      // ------------------------------------------------------
 
       const cartItem = await cartsCollection.findOne({
         _id: cartId,
@@ -692,39 +555,28 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // =========================================================
-      // VALIDATE PRODUCT ID
-      // =========================================================
+      // ------------------------------------------------------
+      // PRODUCT ID
+      // ------------------------------------------------------
 
-      if (!cartItem.productId) {
+      let productId;
+
+      if (cartItem.productId instanceof ObjectId) {
+        productId = cartItem.productId;
+      } else if (ObjectId.isValid(String(cartItem.productId))) {
+        productId = new ObjectId(String(cartItem.productId));
+      } else {
         return res.status(400).json({
           success: false,
           message: "Cart item has an invalid product reference.",
         });
       }
 
-      // =========================================================
-      // GET LATEST PRODUCT
-      // =========================================================
+      // ------------------------------------------------------
+      // PRODUCT
+      // ------------------------------------------------------
 
-      const product = await productsCollection.findOne(
-        {
-          _id: cartItem.productId,
-        },
-        {
-          projection: {
-            sku: 1,
-            name: 1,
-            image: 1,
-            brand: 1,
-            category: 1,
-            weight: 1,
-            price: 1,
-            discount: 1,
-            stock: 1,
-          },
-        },
-      );
+      const product = await getProduct(productId);
 
       if (!product) {
         return res.status(404).json({
@@ -733,81 +585,29 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // =========================================================
-      // PRODUCT NAME
-      // =========================================================
-
-      const productName =
-        typeof product.name === "string" && product.name.trim()
-          ? product.name.trim()
-          : "Unknown Product";
-
-      // =========================================================
-      // PRICE
-      // =========================================================
-
-      const price = Number(product.price);
-
-      if (!Number.isFinite(price) || price < 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid price for "${productName}".`,
-        });
-      }
-
-      // =========================================================
-      // DISCOUNT
-      // =========================================================
-
-      const discount = Number(product.discount ?? 0);
-
-      if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid discount for "${productName}".`,
-        });
-      }
-
-      // =========================================================
+      // ------------------------------------------------------
       // STOCK
-      // =========================================================
+      // ------------------------------------------------------
 
-      const stock = Number(product.stock);
+      validateStock(product, quantity);
 
-      if (!Number.isInteger(stock) || stock < 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid stock for "${productName}".`,
-        });
-      }
+      // ------------------------------------------------------
+      // BUILD UPDATED ITEM
+      // ------------------------------------------------------
 
-      if (stock === 0) {
-        return res.status(400).json({
-          success: false,
-          message: `"${productName}" is currently out of stock.`,
-        });
-      }
+      const updatedItem = buildCartItem({
+        email,
+        product: {
+          ...product,
+          _id: product._id,
+        },
+        quantity,
+        existingItem: cartItem,
+      });
 
-      if (quantity > stock) {
-        return res.status(400).json({
-          success: false,
-          message: `Only ${stock} item(s) available for "${productName}".`,
-        });
-      }
-
-      // =========================================================
-      // CALCULATE CURRENT PRICE
-      // =========================================================
-
-      const finalPrice = Number((price - (price * discount) / 100).toFixed(2));
-
-      const subtotal = Number((finalPrice * quantity).toFixed(2));
-
-      // =========================================================
-      // UPDATE CART ITEM
-      // =========================================================
-
-      const now = new Date();
+      // ------------------------------------------------------
+      // UPDATE
+      // ------------------------------------------------------
 
       const result = await cartsCollection.updateOne(
         {
@@ -815,39 +615,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
           email,
         },
         {
-          $set: {
-            sku: typeof product.sku === "string" ? product.sku.trim() : "",
-
-            name: productName,
-
-            image:
-              typeof product.image === "string" ? product.image.trim() : "",
-
-            brand:
-              typeof product.brand === "string" ? product.brand.trim() : "",
-
-            category:
-              typeof product.category === "string"
-                ? product.category.trim().toLowerCase()
-                : "",
-
-            weight: product.weight ?? "",
-
-            price,
-            discount,
-            finalPrice,
-
-            quantity,
-            subtotal,
-
-            updatedAt: now,
-          },
+          $set: updatedItem,
         },
       );
-
-      // =========================================================
-      // UPDATE FAILURE
-      // =========================================================
 
       if (!result.acknowledged) {
         return res.status(500).json({
@@ -863,26 +633,33 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // =========================================================
-      // RETURN UPDATED ITEM
-      // =========================================================
-
-      const updatedCartItem = await cartsCollection.findOne({
+      const updated = await cartsCollection.findOne({
         _id: cartId,
         email,
       });
 
-      // =========================================================
-      // SUCCESS
-      // =========================================================
-
       return res.status(200).json({
         success: true,
         message: "Cart updated successfully.",
-        data: updatedCartItem,
+        data: updated,
       });
     } catch (error) {
-      console.error("PATCH /carts/:id ERROR:", error);
+      const message = error?.message || "";
+
+      if (
+        message.includes("currently out of stock") ||
+        message.includes("Only ") ||
+        message.includes("Invalid price") ||
+        message.includes("Invalid discount") ||
+        message.includes("Invalid stock")
+      ) {
+        return res.status(400).json({
+          success: false,
+          message,
+        });
+      }
+
+      console.error("PATCH /carts/:id ERROR:", error?.stack || error);
 
       return res.status(500).json({
         success: false,
@@ -891,18 +668,13 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     }
   });
 
-  // =========================================================
+  // ==========================================================
   // GET /carts/summary
-  // Get Current User Cart Summary
-  // =========================================================
+  // ==========================================================
 
   router.get("/summary", verifyToken, async (req, res) => {
     try {
-      // =========================================================
-      // AUTHORIZATION
-      // =========================================================
-
-      const email = normalizeEmail(req.user?.email);
+      const email = getUserEmail(req);
 
       if (!email) {
         return res.status(401).json({
@@ -910,10 +682,6 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
           message: "Unauthorized.",
         });
       }
-
-      // =========================================================
-      // GET CART ITEMS
-      // =========================================================
 
       const cartItems = await cartsCollection
         .find(
@@ -928,42 +696,28 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         )
         .toArray();
 
-      // =========================================================
-      // CALCULATE SUMMARY
-      // =========================================================
-
       const summary = calculateOrderSummary(cartItems);
-
-      // =========================================================
-      // SAFE RESPONSE
-      // =========================================================
-
-      const safeSummary = {
-        totalItems: Number(summary?.totalItems) || 0,
-
-        totalQuantity: Number(summary?.totalQuantity) || 0,
-
-        subtotal: Number(summary?.subtotal) || 0,
-
-        discount: Number(summary?.totalDiscount) || 0,
-
-        shipping: Number(summary?.shipping) || 0,
-
-        tax: Number(summary?.tax) || 0,
-
-        grandTotal: Number(summary?.grandTotal) || 0,
-      };
-
-      // =========================================================
-      // SUCCESS
-      // =========================================================
 
       return res.status(200).json({
         success: true,
-        data: safeSummary,
+        data: {
+          totalItems: Number(summary?.totalItems) || 0,
+
+          totalQuantity: Number(summary?.totalQuantity) || 0,
+
+          subtotal: round(summary?.subtotal),
+
+          discount: round(summary?.totalDiscount),
+
+          shipping: round(summary?.shipping),
+
+          tax: round(summary?.tax),
+
+          grandTotal: round(summary?.grandTotal),
+        },
       });
     } catch (error) {
-      console.error("GET /carts/summary ERROR:", error);
+      console.error("GET /carts/summary ERROR:", error?.stack || error);
 
       return res.status(500).json({
         success: false,
@@ -972,18 +726,13 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     }
   });
 
-  // =========================================================
+  // ==========================================================
   // POST /carts/validate
-  // Validate Current User Cart Before Checkout
-  // =========================================================
+  // ==========================================================
 
   router.post("/validate", verifyToken, async (req, res) => {
     try {
-      // =========================================================
-      // AUTHORIZATION
-      // =========================================================
-
-      const email = normalizeEmail(req.user?.email);
+      const email = getUserEmail(req);
 
       if (!email) {
         return res.status(401).json({
@@ -992,9 +741,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // =========================================================
+      // ------------------------------------------------------
       // LOAD CART
-      // =========================================================
+      // ------------------------------------------------------
 
       const cartItems = await cartsCollection
         .find(
@@ -1009,12 +758,10 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
             },
           },
         )
-        .sort({ createdAt: 1 })
+        .sort({
+          createdAt: 1,
+        })
         .toArray();
-
-      // =========================================================
-      // EMPTY CART
-      // =========================================================
 
       if (cartItems.length === 0) {
         return res.status(400).json({
@@ -1023,12 +770,6 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // =========================================================
-      // MAX CART ITEMS SAFETY LIMIT
-      // =========================================================
-
-      const MAX_CART_ITEMS = 100;
-
       if (cartItems.length > MAX_CART_ITEMS) {
         return res.status(400).json({
           success: false,
@@ -1036,18 +777,18 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // =========================================================
-      // VALIDATE PRODUCT IDS
-      // =========================================================
+      // ------------------------------------------------------
+      // PRODUCT IDS
+      // ------------------------------------------------------
 
       const productIds = [];
       const productIdSet = new Set();
       const errors = [];
 
-      for (const cartItem of cartItems) {
-        if (!cartItem?.productId) {
+      for (const item of cartItems) {
+        if (!item?.productId) {
           errors.push({
-            cartId: cartItem?._id || null,
+            cartId: item?._id || null,
             productId: null,
             message: "Product ID is missing.",
           });
@@ -1058,32 +799,28 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         let productObjectId;
 
         try {
-          if (cartItem.productId instanceof ObjectId) {
-            productObjectId = cartItem.productId;
-          } else if (ObjectId.isValid(String(cartItem.productId))) {
-            productObjectId = new ObjectId(String(cartItem.productId));
+          if (item.productId instanceof ObjectId) {
+            productObjectId = item.productId;
+          } else if (ObjectId.isValid(String(item.productId))) {
+            productObjectId = new ObjectId(String(item.productId));
           } else {
             throw new Error("Invalid ObjectId");
           }
         } catch {
           errors.push({
-            cartId: cartItem?._id || null,
-            productId: String(cartItem.productId),
+            cartId: item?._id || null,
+            productId: String(item.productId),
             message: "Invalid product ID.",
           });
 
           continue;
         }
 
-        const productKey = productObjectId.toString();
+        const key = productObjectId.toString();
 
-        // =======================================================
-        // DUPLICATE PRODUCT
-        // =======================================================
-
-        if (productIdSet.has(productKey)) {
+        if (productIdSet.has(key)) {
           errors.push({
-            cartId: cartItem?._id || null,
+            cartId: item?._id || null,
             productId: productObjectId,
             message: "Duplicate product found in cart.",
           });
@@ -1091,13 +828,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
           continue;
         }
 
-        productIdSet.add(productKey);
+        productIdSet.add(key);
         productIds.push(productObjectId);
       }
-
-      // =========================================================
-      // INVALID PRODUCT IDS
-      // =========================================================
 
       if (errors.length > 0) {
         return res.status(400).json({
@@ -1107,16 +840,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      if (productIds.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "No valid products found in your cart.",
-        });
-      }
-
-      // =========================================================
-      // LOAD CURRENT PRODUCTS
-      // =========================================================
+      // ------------------------------------------------------
+      // LOAD PRODUCTS
+      // ------------------------------------------------------
 
       const products = await productsCollection
         .find(
@@ -1126,77 +852,50 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
             },
           },
           {
-            projection: {
-              sku: 1,
-              name: 1,
-              image: 1,
-              brand: 1,
-              category: 1,
-              weight: 1,
-              price: 1,
-              discount: 1,
-              stock: 1,
-            },
+            projection: PRODUCT_PROJECTION,
           },
         )
         .toArray();
-
-      // =========================================================
-      // PRODUCT MAP
-      // =========================================================
 
       const productMap = new Map(
         products.map((product) => [product._id.toString(), product]),
       );
 
-      // =========================================================
-      // VALIDATED ITEMS
-      // =========================================================
+      // ------------------------------------------------------
+      // VALIDATE ITEMS
+      // ------------------------------------------------------
 
       const validatedItems = [];
 
-      for (const cartItem of cartItems) {
-        const productId = cartItem.productId;
+      for (const item of cartItems) {
+        const productId =
+          item.productId instanceof ObjectId
+            ? item.productId
+            : new ObjectId(String(item.productId));
 
-        const productKey =
-          productId instanceof ObjectId
-            ? productId.toString()
-            : String(productId);
-
-        const product = productMap.get(productKey);
-
-        // =======================================================
-        // PRODUCT NOT FOUND
-        // =======================================================
+        const product = productMap.get(productId.toString());
 
         if (!product) {
           errors.push({
-            cartId: cartItem?._id || null,
-            productId: productId || null,
-            message: `"${cartItem?.name || "Product"}" no longer exists.`,
+            cartId: item?._id || null,
+            productId,
+            message: `"${item?.name || "Product"}" no longer exists.`,
           });
 
           continue;
         }
 
-        // =======================================================
-        // PRODUCT NAME
-        // =======================================================
+        const productName = getProductName(product);
 
-        const productName =
-          typeof product.name === "string" && product.name.trim()
-            ? product.name.trim()
-            : "Unknown Product";
+        const quantity = Number(item.quantity);
 
-        // =======================================================
-        // QUANTITY
-        // =======================================================
-
-        const quantity = Number(cartItem.quantity);
-
-        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) {
+        if (
+          !Number.isInteger(quantity) ||
+          quantity < 1 ||
+          quantity > MAX_QUANTITY
+        ) {
           errors.push({
-            cartId: cartItem?._id || null,
+            cartId: item?._id || null,
             productId: product._id,
             message: `Invalid quantity for "${productName}".`,
           });
@@ -1204,133 +903,62 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
           continue;
         }
 
-        // =======================================================
-        // PRICE
-        // =======================================================
-
-        const price = Number(product.price);
-
-        if (!Number.isFinite(price) || price < 0) {
+        try {
+          validateStock(product, quantity);
+        } catch (error) {
           errors.push({
-            cartId: cartItem?._id || null,
+            cartId: item?._id || null,
             productId: product._id,
-            message: `Invalid price for "${productName}".`,
+            message: error?.message || "Stock validation failed.",
           });
 
           continue;
         }
 
-        // =======================================================
-        // DISCOUNT
-        // =======================================================
+        let pricing;
 
-        const rawDiscount = Number(product.discount ?? 0);
-
-        if (
-          !Number.isFinite(rawDiscount) ||
-          rawDiscount < 0 ||
-          rawDiscount > 100
-        ) {
+        try {
+          pricing = calculateProductPrice(product);
+        } catch (error) {
           errors.push({
-            cartId: cartItem?._id || null,
+            cartId: item?._id || null,
             productId: product._id,
-            message: `Invalid discount for "${productName}".`,
+            message: error?.message || "Product pricing is invalid.",
           });
 
           continue;
         }
 
-        const discount = Number(
-          Math.min(Math.max(rawDiscount, 0), 100).toFixed(2),
+        const subtotal = round(pricing.finalPrice * quantity);
+
+        const discountAmount = round(
+          (pricing.price - pricing.finalPrice) * quantity,
         );
-
-        // =======================================================
-        // STOCK
-        // =======================================================
-
-        const stock = Number(product.stock);
-
-        if (!Number.isInteger(stock) || stock < 0) {
-          errors.push({
-            cartId: cartItem?._id || null,
-            productId: product._id,
-            message: `Invalid stock for "${productName}".`,
-          });
-
-          continue;
-        }
-
-        if (stock === 0) {
-          errors.push({
-            cartId: cartItem?._id || null,
-            productId: product._id,
-            message: `"${productName}" is currently out of stock.`,
-          });
-
-          continue;
-        }
-
-        if (quantity > stock) {
-          errors.push({
-            cartId: cartItem?._id || null,
-            productId: product._id,
-            message: `Only ${stock} item(s) available for "${productName}".`,
-          });
-
-          continue;
-        }
-
-        // =======================================================
-        // FINAL PRICE
-        // =======================================================
-
-        const finalPrice = Number(
-          Math.max(0, price - (price * discount) / 100).toFixed(2),
-        );
-
-        // =======================================================
-        // SUBTOTAL
-        // =======================================================
-
-        const subtotal = Number((finalPrice * quantity).toFixed(2));
-
-        // =======================================================
-        // DISCOUNT AMOUNT
-        // =======================================================
-
-        const discountAmount = Number(
-          ((price - finalPrice) * quantity).toFixed(2),
-        );
-
-        // =======================================================
-        // VALIDATED ITEM
-        // =======================================================
 
         validatedItems.push({
+          cartId: item._id,
+
           productId: product._id,
 
-          sku: typeof product.sku === "string" ? product.sku.trim() : "",
+          sku: getProductSku(product),
 
           name: productName,
 
-          image: typeof product.image === "string" ? product.image.trim() : "",
+          image: getProductImage(product),
 
-          brand: typeof product.brand === "string" ? product.brand.trim() : "",
+          brand: getProductBrand(product),
 
-          category:
-            typeof product.category === "string"
-              ? product.category.trim().toLowerCase()
-              : "",
+          category: getProductCategory(product),
 
           weight: product.weight ?? null,
 
           quantity,
 
-          price,
+          price: pricing.price,
 
-          discount,
+          discount: pricing.discount,
 
-          finalPrice,
+          finalPrice: pricing.finalPrice,
 
           subtotal,
 
@@ -1338,9 +966,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // =========================================================
+      // ------------------------------------------------------
       // VALIDATION FAILED
-      // =========================================================
+      // ------------------------------------------------------
 
       if (errors.length > 0) {
         return res.status(400).json({
@@ -1350,10 +978,6 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // =========================================================
-      // SAFETY CHECK
-      // =========================================================
-
       if (validatedItems.length === 0) {
         return res.status(400).json({
           success: false,
@@ -1361,9 +985,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // =========================================================
-      // CALCULATE ORDER SUMMARY
-      // =========================================================
+      // ------------------------------------------------------
+      // SUMMARY
+      // ------------------------------------------------------
 
       const calculatedSummary = calculateOrderSummary(validatedItems);
 
@@ -1372,31 +996,32 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
         totalQuantity: Number(calculatedSummary?.totalQuantity) || 0,
 
-        subtotal: Number(calculatedSummary?.subtotal) || 0,
+        subtotal: round(calculatedSummary?.subtotal),
 
-        discount: Number(calculatedSummary?.totalDiscount) || 0,
+        discount: round(calculatedSummary?.totalDiscount),
 
-        shipping: Number(calculatedSummary?.shipping) || 0,
+        shipping: round(calculatedSummary?.shipping),
 
-        tax: Number(calculatedSummary?.tax) || 0,
+        tax: round(calculatedSummary?.tax),
 
-        grandTotal: Number(calculatedSummary?.grandTotal) || 0,
+        grandTotal: round(calculatedSummary?.grandTotal),
       };
 
-      // =========================================================
+      // ------------------------------------------------------
       // SUCCESS
-      // =========================================================
+      // ------------------------------------------------------
 
       return res.status(200).json({
         success: true,
         message: "Cart validated successfully.",
+
         data: {
           items: validatedItems,
           ...summary,
         },
       });
     } catch (error) {
-      console.error("POST /carts/validate ERROR:", error?.message || error);
+      console.error("POST /carts/validate ERROR:", error?.stack || error);
 
       return res.status(500).json({
         success: false,

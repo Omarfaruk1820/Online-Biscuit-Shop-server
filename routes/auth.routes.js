@@ -26,46 +26,26 @@ const authRoutes = (usersCollection) => {
     return typeof email === "string" ? email.trim().toLowerCase() : "";
   };
 
-  const normalizeStatus = (status = "active") => {
-    return typeof status === "string" && status.trim()
-      ? status.trim().toLowerCase()
-      : "active";
+  const normalizeString = (value = "") => {
+    return typeof value === "string" ? value.trim() : "";
   };
 
-  // ==========================================================
-  // SAFE USER RESPONSE
-  // ==========================================================
+  const normalizeRole = (role = "user") => {
+    const value = normalizeString(role).toLowerCase();
 
-  const getSafeUser = (user) => {
-    if (!user) {
-      return null;
-    }
+    return value === "admin" ? "admin" : "user";
+  };
 
-    return {
-      _id: user._id || null,
+  const normalizeStatus = (status = "active") => {
+    const value = normalizeString(status).toLowerCase();
 
-      uid: user.uid || "",
+    return value === "blocked" ? "blocked" : "active";
+  };
 
-      name: typeof user.name === "string" ? user.name.trim() : "",
+  const normalizeProvider = (provider = "password") => {
+    const value = normalizeString(provider).toLowerCase();
 
-      email: normalizeEmail(user.email),
-
-      photo: typeof user.photo === "string" ? user.photo.trim() : "",
-
-      role:
-        typeof user.role === "string" ? user.role.trim().toLowerCase() : "user",
-
-      provider:
-        typeof user.provider === "string" ? user.provider.trim() : "password",
-
-      status: normalizeStatus(user.status),
-
-      createdAt: user.createdAt || null,
-
-      updatedAt: user.updatedAt || null,
-
-      lastLogin: user.lastLogin || null,
-    };
+    return value === "google.com" ? "google.com" : "password";
   };
 
   // ==========================================================
@@ -78,34 +58,74 @@ const authRoutes = (usersCollection) => {
     name: 1,
     email: 1,
     photo: 1,
+    emailVerified: 1,
     role: 1,
-    provider: 1,
     status: 1,
+    provider: 1,
     createdAt: 1,
     updatedAt: 1,
     lastLogin: 1,
   };
 
   // ==========================================================
-  // POST /auth/jwt
+  // SAFE USER
   // ==========================================================
+
+  const getSafeUser = (user) => {
+    if (!user) {
+      return null;
+    }
+
+    return {
+      _id: user._id || null,
+
+      uid: normalizeString(user.uid),
+
+      name: normalizeString(user.name),
+
+      email: normalizeEmail(user.email),
+
+      photo: normalizeString(user.photo),
+
+      emailVerified: Boolean(user.emailVerified),
+
+      role: normalizeRole(user.role),
+
+      status: normalizeStatus(user.status),
+
+      provider: normalizeProvider(user.provider),
+
+      createdAt: user.createdAt || null,
+
+      updatedAt: user.updatedAt || null,
+
+      lastLogin: user.lastLogin || null,
+    };
+  };
+
+  // ==========================================================
+  // POST /auth/jwt
   //
   // Firebase ID Token
-  //        ↓
+  //       ↓
   // verifyFirebaseToken
-  //        ↓
+  //       ↓
   // Firebase user
-  //        ↓
+  //       ↓
   // MongoDB user
-  //        ↓
+  //       ↓
   // Application JWT
-  //        ↓
+  //       ↓
   // HTTP-only cookie
   //
   // ==========================================================
 
   router.post("/jwt", verifyFirebaseToken, async (req, res) => {
     try {
+      // ======================================================
+      // FIREBASE USER
+      // ======================================================
+
       const firebaseUser = req.firebaseUser;
 
       if (!firebaseUser?.uid) {
@@ -115,9 +135,16 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      const firebaseUid = String(firebaseUser.uid).trim();
+      const firebaseUid = normalizeString(firebaseUser.uid);
 
       const firebaseEmail = normalizeEmail(firebaseUser.email);
+
+      if (!firebaseUid) {
+        return res.status(401).json({
+          success: false,
+          message: "Firebase user UID is missing.",
+        });
+      }
 
       if (!firebaseEmail) {
         return res.status(401).json({
@@ -126,9 +153,38 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ------------------------------------------------------
-      // Find by Firebase UID first
-      // ------------------------------------------------------
+      // ======================================================
+      // EMAIL VERIFICATION
+      // ======================================================
+
+      const emailVerified = Boolean(
+        firebaseUser.email_verified ?? firebaseUser.emailVerified,
+      );
+
+      // ======================================================
+      // PROVIDER
+      // ======================================================
+
+      const firebaseProvider =
+        firebaseUser.providerData?.[0]?.providerId || "password";
+
+      const provider = normalizeProvider(firebaseProvider);
+
+      // ======================================================
+      // PASSWORD ACCOUNT VERIFICATION
+      // ======================================================
+
+      if (provider === "password" && !emailVerified) {
+        return res.status(403).json({
+          success: false,
+          code: "auth/email-not-verified",
+          message: "Please verify your email address before logging in.",
+        });
+      }
+
+      // ======================================================
+      // FIND USER BY UID
+      // ======================================================
 
       let user = await usersCollection.findOne(
         {
@@ -139,9 +195,9 @@ const authRoutes = (usersCollection) => {
         },
       );
 
-      // ------------------------------------------------------
-      // Fallback to email
-      // ------------------------------------------------------
+      // ======================================================
+      // FALLBACK: FIND BY EMAIL
+      // ======================================================
 
       if (!user) {
         user = await usersCollection.findOne(
@@ -154,9 +210,9 @@ const authRoutes = (usersCollection) => {
         );
       }
 
-      // ------------------------------------------------------
-      // User must exist
-      // ------------------------------------------------------
+      // ======================================================
+      // USER MUST EXIST
+      // ======================================================
 
       if (!user) {
         return res.status(404).json({
@@ -164,6 +220,10 @@ const authRoutes = (usersCollection) => {
           message: "User account was not found.",
         });
       }
+
+      // ======================================================
+      // DATABASE EMAIL
+      // ======================================================
 
       const databaseEmail = normalizeEmail(user.email);
 
@@ -174,9 +234,9 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ------------------------------------------------------
-      // Firebase email vs database email
-      // ------------------------------------------------------
+      // ======================================================
+      // EMAIL CONSISTENCY
+      // ======================================================
 
       if (databaseEmail !== firebaseEmail) {
         return res.status(403).json({
@@ -185,57 +245,20 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ------------------------------------------------------
-      // Firebase UID consistency
-      // ------------------------------------------------------
+      // ======================================================
+      // UID CONSISTENCY
+      // ======================================================
 
-      if (user.uid && String(user.uid).trim() !== firebaseUid) {
+      if (user.uid && normalizeString(user.uid) !== firebaseUid) {
         return res.status(403).json({
           success: false,
           message: "Authentication identity does not match the user account.",
         });
       }
 
-      // ------------------------------------------------------
-      // Attach Firebase UID to legacy user
-      // ------------------------------------------------------
-
-      const now = new Date();
-
-      if (!user.uid) {
-        await usersCollection.updateOne(
-          {
-            _id: user._id,
-
-            $or: [
-              {
-                uid: {
-                  $exists: false,
-                },
-              },
-              {
-                uid: null,
-              },
-              {
-                uid: "",
-              },
-            ],
-          },
-          {
-            $set: {
-              uid: firebaseUid,
-              updatedAt: now,
-            },
-          },
-        );
-
-        user.uid = firebaseUid;
-        user.updatedAt = now;
-      }
-
-      // ------------------------------------------------------
-      // Account status
-      // ------------------------------------------------------
+      // ======================================================
+      // ACCOUNT STATUS
+      // ======================================================
 
       const status = normalizeStatus(user.status);
 
@@ -253,51 +276,99 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ------------------------------------------------------
-      // Update last login
-      // ------------------------------------------------------
+      // ======================================================
+      // UPDATE USER LOGIN DATA
+      // ======================================================
+
+      const now = new Date();
+
+      const updateData = {
+        uid: firebaseUid,
+
+        email: firebaseEmail,
+
+        emailVerified,
+
+        provider,
+
+        lastLogin: now,
+
+        updatedAt: now,
+      };
+
+      // ======================================================
+      // UPDATE FIREBASE PROFILE IF AVAILABLE
+      // ======================================================
+
+      const firebaseName = normalizeString(
+        firebaseUser.name || firebaseUser.displayName || "",
+      );
+
+      const firebasePhoto = normalizeString(
+        firebaseUser.picture || firebaseUser.photoURL || "",
+      );
+
+      if (firebaseName) {
+        updateData.name = firebaseName.slice(0, 100);
+      }
+
+      if (firebasePhoto) {
+        updateData.photo = firebasePhoto;
+      }
 
       await usersCollection.updateOne(
         {
           _id: user._id,
         },
         {
-          $set: {
-            lastLogin: now,
-            updatedAt: now,
-          },
+          $set: updateData,
         },
       );
 
-      user = {
-        ...user,
-        uid: firebaseUid,
-        lastLogin: now,
-        updatedAt: now,
-      };
+      // ======================================================
+      // GET UPDATED USER
+      // ======================================================
 
-      // ------------------------------------------------------
-      // Create application JWT
-      // ------------------------------------------------------
+      const updatedUser = await usersCollection.findOne(
+        {
+          _id: user._id,
+        },
+        {
+          projection: userProjection,
+        },
+      );
+
+      if (!updatedUser) {
+        return res.status(500).json({
+          success: false,
+          message: "Unable to load updated user account.",
+        });
+      }
+
+      // ======================================================
+      // CREATE APPLICATION JWT
+      // ======================================================
 
       const token = createToken({
         email: databaseEmail,
       });
 
-      // ------------------------------------------------------
-      // Set HTTP-only cookie
-      // ------------------------------------------------------
+      // ======================================================
+      // SET HTTP-ONLY COOKIE
+      // ======================================================
 
       res.cookie("token", token, cookieOptions);
 
-      // ------------------------------------------------------
-      // Response
-      // ------------------------------------------------------
+      // ======================================================
+      // SUCCESS
+      // ======================================================
 
       return res.status(200).json({
         success: true,
+
         message: "Authentication successful.",
-        user: getSafeUser(user),
+
+        user: getSafeUser(updatedUser),
       });
     } catch (error) {
       console.error(
@@ -314,6 +385,15 @@ const authRoutes = (usersCollection) => {
 
   // ==========================================================
   // GET /auth/me
+  //
+  // Application JWT cookie
+  //       ↓
+  // verifyToken
+  //       ↓
+  // verifyUser
+  //       ↓
+  // MongoDB user
+  //
   // ==========================================================
 
   router.get(
@@ -331,8 +411,33 @@ const authRoutes = (usersCollection) => {
           });
         }
 
+        // ======================================================
+        // ACCOUNT STATUS
+        // ======================================================
+
+        const status = normalizeStatus(user.status);
+
+        if (status === "blocked") {
+          return res.status(403).json({
+            success: false,
+            message: "Your account has been blocked.",
+          });
+        }
+
+        if (status !== "active") {
+          return res.status(403).json({
+            success: false,
+            message: "Your account is not active.",
+          });
+        }
+
+        // ======================================================
+        // RETURN USER
+        // ======================================================
+
         return res.status(200).json({
           success: true,
+
           user: getSafeUser(user),
         });
       } catch (error) {
