@@ -366,8 +366,7 @@ const mountRoutes = () => {
       ordersCollection,
       cartsCollection,
       productsCollection,
-      verifyToken,
-      verifyAdmin,
+      usersCollection,
     ),
   );
 

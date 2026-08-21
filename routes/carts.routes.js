@@ -3,23 +3,19 @@ import { ObjectId } from "mongodb";
 
 import calculateOrderSummary from "../utils/orderSummary.js";
 
-// ============================================================
-// CART ROUTES
-// ============================================================
-
 const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
   const router = Router();
 
-  // ==========================================================
+  // ============================================================
   // CONSTANTS
-  // ==========================================================
+  // ============================================================
 
   const MAX_QUANTITY = 99;
   const MAX_CART_ITEMS = 100;
 
-  // ==========================================================
+  // ============================================================
   // HELPERS
-  // ==========================================================
+  // ============================================================
 
   const normalizeEmail = (email = "") => {
     return typeof email === "string" ? email.trim().toLowerCase() : "";
@@ -31,6 +27,18 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
   const isValidObjectId = (id) => {
     return typeof id === "string" && ObjectId.isValid(id);
+  };
+
+  const toObjectId = (value) => {
+    if (value instanceof ObjectId) {
+      return value;
+    }
+
+    if (!ObjectId.isValid(String(value))) {
+      return null;
+    }
+
+    return new ObjectId(String(value));
   };
 
   const round = (value) => {
@@ -63,9 +71,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     return typeof product?.sku === "string" ? product.sku.trim() : "";
   };
 
-  // ==========================================================
+  // ============================================================
   // PRODUCT PROJECTION
-  // ==========================================================
+  // ============================================================
 
   const PRODUCT_PROJECTION = {
     sku: 1,
@@ -79,9 +87,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     stock: 1,
   };
 
-  // ==========================================================
-  // GET CURRENT PRODUCT
-  // ==========================================================
+  // ============================================================
+  // GET PRODUCT
+  // ============================================================
 
   const getProduct = async (productId) => {
     return productsCollection.findOne(
@@ -94,9 +102,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     );
   };
 
-  // ==========================================================
+  // ============================================================
   // CALCULATE PRODUCT PRICE
-  // ==========================================================
+  // ============================================================
 
   const calculateProductPrice = (product) => {
     const productName = getProductName(product);
@@ -125,9 +133,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     };
   };
 
-  // ==========================================================
+  // ============================================================
   // VALIDATE STOCK
-  // ==========================================================
+  // ============================================================
 
   const validateStock = (product, quantity) => {
     const productName = getProductName(product);
@@ -149,9 +157,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     return stock;
   };
 
-  // ==========================================================
+  // ============================================================
   // BUILD CART ITEM
-  // ==========================================================
+  // ============================================================
 
   const buildCartItem = ({ email, product, quantity, existingItem = null }) => {
     const { price, discount, finalPrice } = calculateProductPrice(product);
@@ -187,81 +195,72 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     };
   };
 
-  // ==========================================================
+  // ============================================================
+  // GET CART
   // GET /carts
-  // ==========================================================
+  // ============================================================
 
-router.get("/", verifyToken, async (req, res) => {
-  try {
-    console.log("GET /carts started");
+  router.get("/", verifyToken, async (req, res) => {
+    try {
+      const email = getUserEmail(req);
 
-    const email = getUserEmail(req);
+      if (!email) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized.",
+        });
+      }
 
-    console.log("Cart email:", email);
+      const cartItems = await cartsCollection
+        .find(
+          { email },
+          {
+            projection: {
+              email: 0,
+            },
+          },
+        )
+        .sort({
+          createdAt: -1,
+        })
+        .toArray();
 
-    if (!email) {
-      return res.status(401).json({
+      const summary = calculateOrderSummary(cartItems);
+
+      return res.status(200).json({
+        success: true,
+        count: cartItems.length,
+        data: cartItems,
+        summary: {
+          totalItems: Number(summary.totalItems) || 0,
+
+          totalQuantity: Number(summary.totalQuantity) || 0,
+
+          subtotal: round(summary.subtotal),
+
+          totalDiscount: round(summary.totalDiscount),
+
+          shipping: round(summary.shipping),
+
+          tax: round(summary.tax),
+
+          grandTotal: round(summary.grandTotal),
+        },
+      });
+    } catch (error) {
+      console.error("GET /carts ERROR:", error?.stack || error);
+
+      return res.status(500).json({
         success: false,
-        message: "Unauthorized.",
+        message: "Failed to load cart.",
       });
     }
+  });
 
-    if (!cartsCollection) {
-      throw new Error("cartsCollection is not initialized.");
-    }
-
-    console.log("cartsCollection available");
-
-    const cart = await cartsCollection
-      .find(
-        { email },
-        {
-          projection: {
-            email: 0,
-          },
-        },
-      )
-      .sort({
-        createdAt: -1,
-      })
-      .toArray();
-
-    console.log("Cart documents:", cart.length);
-
-    const summary = calculateOrderSummary(cart);
-
-    console.log("Cart summary:", summary);
-
-    return res.status(200).json({
-      success: true,
-      count: cart.length,
-      data: cart,
-      summary: {
-        totalItems: Number(summary?.totalItems) || 0,
-        totalQuantity: Number(summary?.totalQuantity) || 0,
-        subtotal: round(summary?.subtotal),
-        totalDiscount: round(summary?.totalDiscount),
-        shipping: round(summary?.shipping),
-        tax: round(summary?.tax),
-        grandTotal: round(summary?.grandTotal),
-      },
-    });
-  } catch (error) {
-    console.error("=================================");
-    console.error("GET /carts ERROR");
-    console.error(error?.stack || error);
-    console.error("=================================");
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to load cart.",
-    });
-  }
-});
-
-  // ==========================================================
+  // ============================================================
+  // GET CART COUNT
   // GET /carts/count
-  // ==========================================================
+  // ============================================================
 
   router.get("/count", verifyToken, async (req, res) => {
     try {
@@ -292,9 +291,69 @@ router.get("/", verifyToken, async (req, res) => {
     }
   });
 
-  // ==========================================================
+  // ============================================================
+  // GET CART SUMMARY
+  // GET /carts/summary
+  // ============================================================
+
+  router.get("/summary", verifyToken, async (req, res) => {
+    try {
+      const email = getUserEmail(req);
+
+      if (!email) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized.",
+        });
+      }
+
+      const cartItems = await cartsCollection
+        .find(
+          { email },
+          {
+            projection: {
+              price: 1,
+              finalPrice: 1,
+              quantity: 1,
+            },
+          },
+        )
+        .toArray();
+
+      const summary = calculateOrderSummary(cartItems);
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          totalItems: Number(summary.totalItems) || 0,
+
+          totalQuantity: Number(summary.totalQuantity) || 0,
+
+          subtotal: round(summary.subtotal),
+
+          discount: round(summary.totalDiscount),
+
+          shipping: round(summary.shipping),
+
+          tax: round(summary.tax),
+
+          grandTotal: round(summary.grandTotal),
+        },
+      });
+    } catch (error) {
+      console.error("GET /carts/summary ERROR:", error?.stack || error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to load cart summary.",
+      });
+    }
+  });
+
+  // ============================================================
+  // ADD TO CART
   // POST /carts
-  // ==========================================================
+  // ============================================================
 
   router.post("/", verifyToken, async (req, res) => {
     try {
@@ -307,11 +366,8 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      const { productId, quantity } = req.body || {};
-
-      // ------------------------------------------------------
-      // PRODUCT ID
-      // ------------------------------------------------------
+      const productId = req.body?.productId;
+      const quantity = Number(req.body?.quantity);
 
       if (!productId) {
         return res.status(400).json({
@@ -327,13 +383,11 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      // ------------------------------------------------------
-      // QUANTITY
-      // ------------------------------------------------------
-
-      const qty = Number(quantity);
-
-      if (!Number.isInteger(qty) || qty < 1 || qty > MAX_QUANTITY) {
+      if (
+        !Number.isInteger(quantity) ||
+        quantity < 1 ||
+        quantity > MAX_QUANTITY
+      ) {
         return res.status(400).json({
           success: false,
           message: `Quantity must be between 1 and ${MAX_QUANTITY}.`,
@@ -341,10 +395,6 @@ router.get("/", verifyToken, async (req, res) => {
       }
 
       const productObjectId = new ObjectId(productId);
-
-      // ------------------------------------------------------
-      // PRODUCT
-      // ------------------------------------------------------
 
       const product = await getProduct(productObjectId);
 
@@ -355,16 +405,12 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      // ------------------------------------------------------
-      // EXISTING ITEM
-      // ------------------------------------------------------
-
       const existingItem = await cartsCollection.findOne({
         email,
         productId: productObjectId,
       });
 
-      let newQuantity = qty;
+      let newQuantity = quantity;
 
       if (existingItem) {
         const existingQuantity = Number(existingItem.quantity);
@@ -376,7 +422,7 @@ router.get("/", verifyToken, async (req, res) => {
           });
         }
 
-        newQuantity = existingQuantity + qty;
+        newQuantity = existingQuantity + quantity;
 
         if (newQuantity > MAX_QUANTITY) {
           return res.status(400).json({
@@ -386,15 +432,7 @@ router.get("/", verifyToken, async (req, res) => {
         }
       }
 
-      // ------------------------------------------------------
-      // STOCK
-      // ------------------------------------------------------
-
       validateStock(product, newQuantity);
-
-      // ------------------------------------------------------
-      // BUILD ITEM
-      // ------------------------------------------------------
 
       const cartItem = buildCartItem({
         email,
@@ -403,9 +441,9 @@ router.get("/", verifyToken, async (req, res) => {
         existingItem,
       });
 
-      // ------------------------------------------------------
-      // UPDATE EXISTING
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // UPDATE EXISTING ITEM
+      // --------------------------------------------------------
 
       if (existingItem) {
         const result = await cartsCollection.updateOne(
@@ -445,28 +483,41 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      // ------------------------------------------------------
-      // INSERT NEW
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // CHECK MAX CART ITEMS
+      // --------------------------------------------------------
+
+      const cartCount = await cartsCollection.countDocuments({
+        email,
+      });
+
+      if (cartCount >= MAX_CART_ITEMS) {
+        return res.status(400).json({
+          success: false,
+          message: `Cart cannot contain more than ${MAX_CART_ITEMS} products.`,
+        });
+      }
+
+      // --------------------------------------------------------
+      // INSERT
+      // --------------------------------------------------------
 
       const result = await cartsCollection.insertOne(cartItem);
 
-      if (!result.acknowledged) {
+      if (!result.acknowledged || !result.insertedId) {
         return res.status(500).json({
           success: false,
           message: "Failed to add product to cart.",
         });
       }
 
-      const created = {
-        ...cartItem,
-        _id: result.insertedId,
-      };
-
       return res.status(201).json({
         success: true,
         message: "Product added to cart successfully.",
-        data: created,
+        data: {
+          ...cartItem,
+          _id: result.insertedId,
+        },
       });
     } catch (error) {
       if (error?.code === 11000) {
@@ -500,9 +551,10 @@ router.get("/", verifyToken, async (req, res) => {
     }
   });
 
-  // ==========================================================
+  // ============================================================
+  // UPDATE CART QUANTITY
   // PATCH /carts/:id
-  // ==========================================================
+  // ============================================================
 
   router.patch("/:id", verifyToken, async (req, res) => {
     try {
@@ -539,10 +591,6 @@ router.get("/", verifyToken, async (req, res) => {
 
       const cartId = new ObjectId(id);
 
-      // ------------------------------------------------------
-      // CART ITEM
-      // ------------------------------------------------------
-
       const cartItem = await cartsCollection.findOne({
         _id: cartId,
         email,
@@ -555,26 +603,14 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      // ------------------------------------------------------
-      // PRODUCT ID
-      // ------------------------------------------------------
+      const productId = toObjectId(cartItem.productId);
 
-      let productId;
-
-      if (cartItem.productId instanceof ObjectId) {
-        productId = cartItem.productId;
-      } else if (ObjectId.isValid(String(cartItem.productId))) {
-        productId = new ObjectId(String(cartItem.productId));
-      } else {
+      if (!productId) {
         return res.status(400).json({
           success: false,
           message: "Cart item has an invalid product reference.",
         });
       }
-
-      // ------------------------------------------------------
-      // PRODUCT
-      // ------------------------------------------------------
 
       const product = await getProduct(productId);
 
@@ -585,29 +621,14 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      // ------------------------------------------------------
-      // STOCK
-      // ------------------------------------------------------
-
       validateStock(product, quantity);
-
-      // ------------------------------------------------------
-      // BUILD UPDATED ITEM
-      // ------------------------------------------------------
 
       const updatedItem = buildCartItem({
         email,
-        product: {
-          ...product,
-          _id: product._id,
-        },
+        product,
         quantity,
         existingItem: cartItem,
       });
-
-      // ------------------------------------------------------
-      // UPDATE
-      // ------------------------------------------------------
 
       const result = await cartsCollection.updateOne(
         {
@@ -668,67 +689,10 @@ router.get("/", verifyToken, async (req, res) => {
     }
   });
 
-  // ==========================================================
-  // GET /carts/summary
-  // ==========================================================
-
-  router.get("/summary", verifyToken, async (req, res) => {
-    try {
-      const email = getUserEmail(req);
-
-      if (!email) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized.",
-        });
-      }
-
-      const cartItems = await cartsCollection
-        .find(
-          { email },
-          {
-            projection: {
-              price: 1,
-              finalPrice: 1,
-              quantity: 1,
-            },
-          },
-        )
-        .toArray();
-
-      const summary = calculateOrderSummary(cartItems);
-
-      return res.status(200).json({
-        success: true,
-        data: {
-          totalItems: Number(summary?.totalItems) || 0,
-
-          totalQuantity: Number(summary?.totalQuantity) || 0,
-
-          subtotal: round(summary?.subtotal),
-
-          discount: round(summary?.totalDiscount),
-
-          shipping: round(summary?.shipping),
-
-          tax: round(summary?.tax),
-
-          grandTotal: round(summary?.grandTotal),
-        },
-      });
-    } catch (error) {
-      console.error("GET /carts/summary ERROR:", error?.stack || error);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to load cart summary.",
-      });
-    }
-  });
-
-  // ==========================================================
+  // ============================================================
+  // VALIDATE CART
   // POST /carts/validate
-  // ==========================================================
+  // ============================================================
 
   router.post("/validate", verifyToken, async (req, res) => {
     try {
@@ -741,10 +705,6 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      // ------------------------------------------------------
-      // LOAD CART
-      // ------------------------------------------------------
-
       const cartItems = await cartsCollection
         .find(
           { email },
@@ -753,8 +713,8 @@ router.get("/", verifyToken, async (req, res) => {
               _id: 1,
               productId: 1,
               quantity: 1,
-              name: 1,
               createdAt: 1,
+              name: 1,
             },
           },
         )
@@ -777,51 +737,33 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      // ------------------------------------------------------
-      // PRODUCT IDS
-      // ------------------------------------------------------
-
       const productIds = [];
       const productIdSet = new Set();
       const errors = [];
 
+      // --------------------------------------------------------
+      // VALIDATE CART REFERENCES
+      // --------------------------------------------------------
+
       for (const item of cartItems) {
-        if (!item?.productId) {
+        const productId = toObjectId(item?.productId);
+
+        if (!productId) {
           errors.push({
             cartId: item?._id || null,
-            productId: null,
-            message: "Product ID is missing.",
-          });
-
-          continue;
-        }
-
-        let productObjectId;
-
-        try {
-          if (item.productId instanceof ObjectId) {
-            productObjectId = item.productId;
-          } else if (ObjectId.isValid(String(item.productId))) {
-            productObjectId = new ObjectId(String(item.productId));
-          } else {
-            throw new Error("Invalid ObjectId");
-          }
-        } catch {
-          errors.push({
-            cartId: item?._id || null,
-            productId: String(item.productId),
+            productId: item?.productId || null,
             message: "Invalid product ID.",
           });
 
           continue;
         }
 
-        const key = productObjectId.toString();
+        const key = productId.toString();
 
         if (productIdSet.has(key)) {
           errors.push({
             cartId: item?._id || null,
-            productId: productObjectId,
+            productId,
             message: "Duplicate product found in cart.",
           });
 
@@ -829,7 +771,7 @@ router.get("/", verifyToken, async (req, res) => {
         }
 
         productIdSet.add(key);
-        productIds.push(productObjectId);
+        productIds.push(productId);
       }
 
       if (errors.length > 0) {
@@ -840,9 +782,9 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      // ------------------------------------------------------
-      // LOAD PRODUCTS
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // LOAD CURRENT PRODUCTS
+      // --------------------------------------------------------
 
       const products = await productsCollection
         .find(
@@ -861,25 +803,22 @@ router.get("/", verifyToken, async (req, res) => {
         products.map((product) => [product._id.toString(), product]),
       );
 
-      // ------------------------------------------------------
-      // VALIDATE ITEMS
-      // ------------------------------------------------------
-
       const validatedItems = [];
 
-      for (const item of cartItems) {
-        const productId =
-          item.productId instanceof ObjectId
-            ? item.productId
-            : new ObjectId(String(item.productId));
+      // --------------------------------------------------------
+      // VALIDATE EACH ITEM
+      // --------------------------------------------------------
+
+      for (const cartItem of cartItems) {
+        const productId = toObjectId(cartItem.productId);
 
         const product = productMap.get(productId.toString());
 
         if (!product) {
           errors.push({
-            cartId: item?._id || null,
+            cartId: cartItem._id,
             productId,
-            message: `"${item?.name || "Product"}" no longer exists.`,
+            message: `"${cartItem?.name || "Product"}" no longer exists.`,
           });
 
           continue;
@@ -887,7 +826,7 @@ router.get("/", verifyToken, async (req, res) => {
 
         const productName = getProductName(product);
 
-        const quantity = Number(item.quantity);
+        const quantity = Number(cartItem.quantity);
 
         if (
           !Number.isInteger(quantity) ||
@@ -895,7 +834,7 @@ router.get("/", verifyToken, async (req, res) => {
           quantity > MAX_QUANTITY
         ) {
           errors.push({
-            cartId: item?._id || null,
+            cartId: cartItem._id,
             productId: product._id,
             message: `Invalid quantity for "${productName}".`,
           });
@@ -907,7 +846,7 @@ router.get("/", verifyToken, async (req, res) => {
           validateStock(product, quantity);
         } catch (error) {
           errors.push({
-            cartId: item?._id || null,
+            cartId: cartItem._id,
             productId: product._id,
             message: error?.message || "Stock validation failed.",
           });
@@ -921,7 +860,7 @@ router.get("/", verifyToken, async (req, res) => {
           pricing = calculateProductPrice(product);
         } catch (error) {
           errors.push({
-            cartId: item?._id || null,
+            cartId: cartItem._id,
             productId: product._id,
             message: error?.message || "Product pricing is invalid.",
           });
@@ -936,7 +875,7 @@ router.get("/", verifyToken, async (req, res) => {
         );
 
         validatedItems.push({
-          cartId: item._id,
+          cartId: cartItem._id,
 
           productId: product._id,
 
@@ -966,10 +905,6 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      // ------------------------------------------------------
-      // VALIDATION FAILED
-      // ------------------------------------------------------
-
       if (errors.length > 0) {
         return res.status(400).json({
           success: false,
@@ -985,39 +920,29 @@ router.get("/", verifyToken, async (req, res) => {
         });
       }
 
-      // ------------------------------------------------------
-      // SUMMARY
-      // ------------------------------------------------------
-
       const calculatedSummary = calculateOrderSummary(validatedItems);
-
-      const summary = {
-        totalItems: Number(calculatedSummary?.totalItems) || 0,
-
-        totalQuantity: Number(calculatedSummary?.totalQuantity) || 0,
-
-        subtotal: round(calculatedSummary?.subtotal),
-
-        discount: round(calculatedSummary?.totalDiscount),
-
-        shipping: round(calculatedSummary?.shipping),
-
-        tax: round(calculatedSummary?.tax),
-
-        grandTotal: round(calculatedSummary?.grandTotal),
-      };
-
-      // ------------------------------------------------------
-      // SUCCESS
-      // ------------------------------------------------------
 
       return res.status(200).json({
         success: true,
         message: "Cart validated successfully.",
-
         data: {
           items: validatedItems,
-          ...summary,
+
+          totalItems: Number(calculatedSummary.totalItems) || 0,
+
+          totalQuantity: Number(calculatedSummary.totalQuantity) || 0,
+
+          subtotal: round(calculatedSummary.subtotal),
+
+          discount: round(calculatedSummary.totalDiscount),
+
+          totalDiscount: round(calculatedSummary.totalDiscount),
+
+          shipping: round(calculatedSummary.shipping),
+
+          tax: round(calculatedSummary.tax),
+
+          grandTotal: round(calculatedSummary.grandTotal),
         },
       });
     } catch (error) {

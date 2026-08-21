@@ -1,9 +1,10 @@
-// routes/orders.routes.js
-
 import { Router } from "express";
 import { ObjectId } from "mongodb";
 import { randomUUID } from "crypto";
 
+import verifyToken from "../middleware/verifyToken.js";
+import verifyUser from "../middleware/verifyUser.js";
+import verifyAdmin from "../middleware/verifyAdmin.js";
 import calculateOrderSummary from "../utils/orderSummary.js";
 
 const ordersRoutes = (
@@ -11,24 +12,20 @@ const ordersRoutes = (
   ordersCollection,
   cartsCollection,
   productsCollection,
-  verifyToken,
-  verifyAdmin,
+  usersCollection,
 ) => {
+  console.log("ORDERS ROUTES INITIALIZED:", {
+    ordersCollection: typeof ordersCollection,
+    cartsCollection: typeof cartsCollection,
+    productsCollection: typeof productsCollection,
+    usersCollection: typeof usersCollection,
+  });
+
   const router = Router();
 
   // ============================================================
   // CONSTANTS
   // ============================================================
-
-  const ALLOWED_STATUSES = [
-    "all",
-    "pending",
-    "confirmed",
-    "processing",
-    "shipped",
-    "delivered",
-    "cancelled",
-  ];
 
   const ORDER_STATUSES = [
     "pending",
@@ -38,6 +35,8 @@ const ordersRoutes = (
     "delivered",
     "cancelled",
   ];
+
+  const ALLOWED_STATUSES = ["all", ...ORDER_STATUSES];
 
   const ALLOWED_SORTS = ["newest", "oldest", "highest", "lowest"];
 
@@ -50,6 +49,18 @@ const ordersRoutes = (
 
   const MAX_PAGE_LIMIT = 100;
   const MAX_CART_QUANTITY = 99;
+
+  const PRODUCT_PROJECTION = {
+    sku: 1,
+    name: 1,
+    image: 1,
+    brand: 1,
+    category: 1,
+    weight: 1,
+    price: 1,
+    discount: 1,
+    stock: 1,
+  };
 
   // ============================================================
   // HELPERS
@@ -67,18 +78,31 @@ const ordersRoutes = (
     return value.trim().slice(0, maxLength);
   };
 
-  const isValidObjectId = (id) => {
-    return typeof id === "string" && ObjectId.isValid(id);
-  };
-
   const round = (value) => {
     const number = Number(value);
 
     return Number.isFinite(number) ? Number(number.toFixed(2)) : 0;
   };
 
+  const isValidObjectId = (id) => {
+    return typeof id === "string" && ObjectId.isValid(id);
+  };
+
+  const toObjectId = (value) => {
+    if (value instanceof ObjectId) {
+      return value;
+    }
+
+    if (!ObjectId.isValid(String(value))) {
+      return null;
+    }
+
+    return new ObjectId(String(value));
+  };
+
   const getPagination = (query = {}) => {
     let page = Number.parseInt(query.page, 10);
+
     let limit = Number.parseInt(query.limit, 10);
 
     if (!Number.isInteger(page) || page < 1) {
@@ -91,12 +115,10 @@ const ordersRoutes = (
 
     limit = Math.min(limit, MAX_PAGE_LIMIT);
 
-    const skip = (page - 1) * limit;
-
     return {
       page,
       limit,
-      skip,
+      skip: (page - 1) * limit,
     };
   };
 
@@ -116,6 +138,7 @@ const ordersRoutes = (
 
   const createOrderNumber = () => {
     const timestamp = Date.now().toString(36).toUpperCase();
+
     const random = randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
 
     return `ORD-${timestamp}-${random}`;
@@ -125,7 +148,7 @@ const ordersRoutes = (
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const orderNumber = createOrderNumber();
 
-      const existingOrder = await ordersCollection.findOne(
+      const existing = await ordersCollection.findOne(
         { orderNumber },
         {
           projection: {
@@ -135,7 +158,7 @@ const ordersRoutes = (
         },
       );
 
-      if (!existingOrder) {
+      if (!existing) {
         return orderNumber;
       }
     }
@@ -143,51 +166,19 @@ const ordersRoutes = (
     throw new Error("Failed to generate unique order number.");
   };
 
-  const createSearchQuery = (search) => {
-    if (!search) {
-      return {};
-    }
-
-    const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-    return {
-      $or: [
-        {
-          email: {
-            $regex: escapedSearch,
-            $options: "i",
-          },
-        },
-        {
-          "customer.name": {
-            $regex: escapedSearch,
-            $options: "i",
-          },
-        },
-        {
-          "customer.phone": {
-            $regex: escapedSearch,
-            $options: "i",
-          },
-        },
-        {
-          orderNumber: {
-            $regex: escapedSearch,
-            $options: "i",
-          },
-        },
-      ],
-    };
-  };
-
   const normalizeCustomer = (customer = {}) => {
     return {
       name: normalizeString(customer.name, 100),
+
       phone: normalizeString(customer.phone, 30),
+
       address: normalizeString(customer.address, 500),
+
       city: normalizeString(customer.city, 100),
+
       area: normalizeString(customer.area, 100),
-      note: normalizeString(customer.note, 500),
+
+      note: normalizeString(customer.note, 300),
     };
   };
 
@@ -220,6 +211,14 @@ const ordersRoutes = (
       return "Customer address is too short.";
     }
 
+    if (!customer.city) {
+      return "Customer city is required.";
+    }
+
+    if (!customer.area) {
+      return "Customer area is required.";
+    }
+
     return null;
   };
 
@@ -230,26 +229,73 @@ const ordersRoutes = (
     return paymentMethod === "cash_on_delivery" ? paymentMethod : "";
   };
 
-  const createOrderSummary = (order) => {
+  const getProductName = (product) => {
+    return typeof product?.name === "string" && product.name.trim()
+      ? product.name.trim()
+      : "Unknown Product";
+  };
+
+  const getProductSku = (product) => {
+    return typeof product?.sku === "string" ? product.sku.trim() : "";
+  };
+
+  const getProductImage = (product) => {
+    return typeof product?.image === "string" ? product.image.trim() : "";
+  };
+
+  const getProductBrand = (product) => {
+    return typeof product?.brand === "string" ? product.brand.trim() : "";
+  };
+
+  const getProductCategory = (product) => {
+    return typeof product?.category === "string"
+      ? product.category.trim().toLowerCase()
+      : "";
+  };
+
+  const calculateProductPricing = (product) => {
+    const productName = getProductName(product);
+
+    const price = Number(product?.price);
+
+    if (!Number.isFinite(price) || price < 0) {
+      throw new Error(`Invalid price for "${productName}".`);
+    }
+
+    const discount = Number(product?.discount ?? 0);
+
+    if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+      throw new Error(`Invalid discount for "${productName}".`);
+    }
+
+    const safePrice = round(price);
+    const safeDiscount = round(discount);
+
+    const finalPrice = round(safePrice - (safePrice * safeDiscount) / 100);
+
     return {
-      totalItems: Number.isFinite(Number(order?.totalItems))
-        ? Number(order.totalItems)
-        : 0,
-
-      totalQuantity: Number.isFinite(Number(order?.totalQuantity))
-        ? Number(order.totalQuantity)
-        : 0,
-
-      subtotal: round(order?.subtotal),
-
-      totalDiscount: round(order?.totalDiscount ?? order?.discount),
-
-      shipping: round(order?.shipping),
-
-      tax: round(order?.tax),
-
-      grandTotal: round(order?.grandTotal ?? order?.total),
+      price: safePrice,
+      discount: safeDiscount,
+      finalPrice,
     };
+  };
+
+  const validateProductStock = (product, quantity) => {
+    const productName = getProductName(product);
+
+    const stock = Number(product?.stock);
+
+    if (!Number.isInteger(stock) || stock < 0) {
+      throw new Error(`Invalid stock for "${productName}".`);
+    }
+
+    if (stock === 0) {
+      throw new Error(`"${productName}" is out of stock.`);
+    }
+
+    if (quantity > stock) {
+      throw new Error(`Only ${stock} item(s) available for "${productName}".`);
+    }
   };
 
   const normalizeOrderItems = (items = []) => {
@@ -286,9 +332,67 @@ const ordersRoutes = (
     }));
   };
 
+  const createOrderSummary = (order) => {
+    return {
+      totalItems: Number(order?.totalItems) || 0,
+
+      totalQuantity: Number(order?.totalQuantity) || 0,
+
+      subtotal: round(order?.subtotal),
+
+      totalDiscount: round(order?.totalDiscount ?? order?.discount),
+
+      shipping: round(order?.shipping),
+
+      tax: round(order?.tax),
+
+      grandTotal: round(order?.grandTotal ?? order?.total),
+    };
+  };
+
+  const createSearchQuery = (search) => {
+    if (!search) {
+      return {};
+    }
+
+    const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    return {
+      $or: [
+        {
+          email: {
+            $regex: escaped,
+            $options: "i",
+          },
+        },
+
+        {
+          "customer.name": {
+            $regex: escaped,
+            $options: "i",
+          },
+        },
+
+        {
+          "customer.phone": {
+            $regex: escaped,
+            $options: "i",
+          },
+        },
+
+        {
+          orderNumber: {
+            $regex: escaped,
+            $options: "i",
+          },
+        },
+      ],
+    };
+  };
+
   // ============================================================
-  // POST /orders
   // CREATE ORDER
+  // POST /orders
   // ============================================================
 
   router.post("/", verifyToken, async (req, res) => {
@@ -327,9 +431,9 @@ const ordersRoutes = (
       let createdOrder = null;
 
       await session.withTransaction(async () => {
-        // ======================================================
-        // LOAD CART INSIDE TRANSACTION
-        // ======================================================
+        // ==================================================
+        // LOAD CART
+        // ==================================================
 
         const cartItems = await cartsCollection
           .find(
@@ -339,61 +443,55 @@ const ordersRoutes = (
                 _id: 1,
                 productId: 1,
                 quantity: 1,
+                createdAt: 1,
               },
               session,
             },
           )
-          .sort({ createdAt: 1 })
+          .sort({
+            createdAt: 1,
+          })
           .toArray();
 
         if (cartItems.length === 0) {
           const error = new Error("Your cart is empty.");
 
           error.statusCode = 400;
-
           throw error;
         }
 
-        // ======================================================
-        // VALIDATE CART ITEMS
-        // ======================================================
+        if (cartItems.length > MAX_CART_QUANTITY) {
+          const error = new Error("Cart contains too many products.");
+
+          error.statusCode = 400;
+          throw error;
+        }
+
+        // ==================================================
+        // PREPARE PRODUCT IDS
+        // ==================================================
 
         const productIds = [];
-        const cartProductMap = new Map();
+        const cartMap = new Map();
 
         for (const cartItem of cartItems) {
-          if (!cartItem.productId) {
-            const error = new Error("A cart item has a missing product ID.");
+          const productId = toObjectId(cartItem.productId);
 
-            error.statusCode = 400;
-
-            throw error;
-          }
-
-          let productObjectId;
-
-          try {
-            productObjectId =
-              cartItem.productId instanceof ObjectId
-                ? cartItem.productId
-                : new ObjectId(String(cartItem.productId));
-          } catch {
+          if (!productId) {
             const error = new Error(
               "A cart item contains an invalid product ID.",
             );
 
             error.statusCode = 400;
-
             throw error;
           }
 
-          const productKey = productObjectId.toString();
+          const key = productId.toString();
 
-          if (cartProductMap.has(productKey)) {
+          if (cartMap.has(key)) {
             const error = new Error("Duplicate product found in cart.");
 
             error.statusCode = 400;
-
             throw error;
           }
 
@@ -407,22 +505,20 @@ const ordersRoutes = (
             const error = new Error("Invalid cart quantity.");
 
             error.statusCode = 400;
-
             throw error;
           }
 
-          cartProductMap.set(productKey, {
-            ...cartItem,
-            productId: productObjectId,
+          cartMap.set(key, {
+            productId,
             quantity,
           });
 
-          productIds.push(productObjectId);
+          productIds.push(productId);
         }
 
-        // ======================================================
-        // LOAD LATEST PRODUCTS
-        // ======================================================
+        // ==================================================
+        // LOAD CURRENT PRODUCTS
+        // ==================================================
 
         const products = await productsCollection
           .find(
@@ -432,17 +528,7 @@ const ordersRoutes = (
               },
             },
             {
-              projection: {
-                sku: 1,
-                name: 1,
-                image: 1,
-                brand: 1,
-                category: 1,
-                weight: 1,
-                price: 1,
-                discount: 1,
-                stock: 1,
-              },
+              projection: PRODUCT_PROJECTION,
               session,
             },
           )
@@ -452,19 +538,18 @@ const ordersRoutes = (
           products.map((product) => [product._id.toString(), product]),
         );
 
-        // ======================================================
-        // BUILD FRESH ORDER ITEMS
-        // NEVER TRUST CART PRICE
-        // ======================================================
+        // ==================================================
+        // BUILD ORDER ITEMS
+        // ==================================================
 
         const orderItems = [];
 
         for (const productId of productIds) {
-          const productKey = productId.toString();
+          const key = productId.toString();
 
-          const cartItem = cartProductMap.get(productKey);
+          const cartItem = cartMap.get(key);
 
-          const product = productMap.get(productKey);
+          const product = productMap.get(key);
 
           if (!product) {
             const error = new Error(
@@ -472,104 +557,41 @@ const ordersRoutes = (
             );
 
             error.statusCode = 400;
-
             throw error;
           }
 
-          const productName =
-            typeof product.name === "string" && product.name.trim()
-              ? product.name.trim()
-              : "Unknown Product";
+          validateProductStock(product, cartItem.quantity);
 
-          const price = Number(product.price);
+          const pricing = calculateProductPricing(product);
 
-          if (!Number.isFinite(price) || price < 0) {
-            const error = new Error(`Invalid price for "${productName}".`);
-
-            error.statusCode = 400;
-
-            throw error;
-          }
-
-          const rawDiscount = Number(product.discount ?? 0);
-
-          if (
-            !Number.isFinite(rawDiscount) ||
-            rawDiscount < 0 ||
-            rawDiscount > 100
-          ) {
-            const error = new Error(`Invalid discount for "${productName}".`);
-
-            error.statusCode = 400;
-
-            throw error;
-          }
-
-          const discount = rawDiscount;
-
-          const stock = Number(product.stock);
-
-          if (!Number.isInteger(stock) || stock < 0) {
-            const error = new Error(`Invalid stock for "${productName}".`);
-
-            error.statusCode = 400;
-
-            throw error;
-          }
-
-          if (stock === 0) {
-            const error = new Error(`"${productName}" is out of stock.`);
-
-            error.statusCode = 400;
-
-            throw error;
-          }
-
-          if (cartItem.quantity > stock) {
-            const error = new Error(
-              `Only ${stock} item(s) available for "${productName}".`,
-            );
-
-            error.statusCode = 400;
-
-            throw error;
-          }
-
-          const finalPrice = round(price - (price * discount) / 100);
-
-          const subtotal = round(finalPrice * cartItem.quantity);
+          const subtotal = round(pricing.finalPrice * cartItem.quantity);
 
           const discountAmount = round(
-            (price - finalPrice) * cartItem.quantity,
+            (pricing.price - pricing.finalPrice) * cartItem.quantity,
           );
 
           orderItems.push({
             productId: product._id,
 
-            sku: typeof product.sku === "string" ? product.sku.trim() : "",
+            sku: getProductSku(product),
 
-            name: productName,
+            name: getProductName(product),
 
-            image:
-              typeof product.image === "string" ? product.image.trim() : "",
+            image: getProductImage(product),
 
-            brand:
-              typeof product.brand === "string" ? product.brand.trim() : "",
+            brand: getProductBrand(product),
 
-            category:
-              typeof product.category === "string"
-                ? product.category.trim().toLowerCase()
-                : "",
+            category: getProductCategory(product),
 
             weight: product.weight ?? null,
 
             quantity: cartItem.quantity,
 
-            price: round(price),
+            price: pricing.price,
 
-            discount: round(discount),
+            discount: pricing.discount,
 
-            finalPrice,
+            finalPrice: pricing.finalPrice,
 
             subtotal,
 
@@ -577,9 +599,9 @@ const ordersRoutes = (
           });
         }
 
-        // ======================================================
-        // ORDER SUMMARY
-        // ======================================================
+        // ==================================================
+        // CALCULATE SUMMARY
+        // ==================================================
 
         const calculatedSummary = calculateOrderSummary(orderItems);
 
@@ -588,32 +610,29 @@ const ordersRoutes = (
 
           totalQuantity: Number(calculatedSummary.totalQuantity) || 0,
 
-          subtotal: Number(calculatedSummary.subtotal) || 0,
+          subtotal: round(calculatedSummary.subtotal),
 
-          totalDiscount: Number(calculatedSummary.totalDiscount) || 0,
+          totalDiscount: round(calculatedSummary.totalDiscount),
 
-          shipping: Number(calculatedSummary.shipping) || 0,
+          shipping: round(calculatedSummary.shipping),
 
-          tax: Number(calculatedSummary.tax) || 0,
+          tax: round(calculatedSummary.tax),
 
-          grandTotal: Number(calculatedSummary.grandTotal) || 0,
+          grandTotal: round(calculatedSummary.grandTotal),
         };
 
-        // ======================================================
-        // CREATE UNIQUE ORDER NUMBER
-        // ======================================================
+        // ==================================================
+        // ORDER NUMBER
+        // ==================================================
 
         const orderNumber = await createUniqueOrderNumber(session);
 
-        // ======================================================
-        // UPDATE PRODUCT STOCK
-        //
-        // Atomic condition:
-        // stock >= requested quantity
-        // ======================================================
+        // ==================================================
+        // DECREASE PRODUCT STOCK
+        // ==================================================
 
         for (const item of orderItems) {
-          const stockResult = await productsCollection.updateOne(
+          const result = await productsCollection.updateOne(
             {
               _id: item.productId,
               stock: {
@@ -624,6 +643,7 @@ const ordersRoutes = (
               $inc: {
                 stock: -item.quantity,
               },
+
               $set: {
                 updatedAt: new Date(),
               },
@@ -633,20 +653,19 @@ const ordersRoutes = (
             },
           );
 
-          if (!stockResult.acknowledged || stockResult.modifiedCount !== 1) {
+          if (!result.acknowledged || result.modifiedCount !== 1) {
             const error = new Error(
               `"${item.name}" is no longer available in the requested quantity.`,
             );
 
             error.statusCode = 409;
-
             throw error;
           }
         }
 
-        // ======================================================
-        // CREATE ORDER DOCUMENT
-        // ======================================================
+        // ==================================================
+        // CREATE ORDER
+        // ==================================================
 
         const now = new Date();
 
@@ -682,7 +701,9 @@ const ordersRoutes = (
           timeline: [
             {
               status: "pending",
+
               note: "Order placed successfully.",
+
               createdAt: now,
             },
           ],
@@ -692,51 +713,54 @@ const ordersRoutes = (
           updatedAt: now,
         };
 
-        const insertResult = await ordersCollection.insertOne(orderDocument, {
+        const result = await ordersCollection.insertOne(orderDocument, {
           session,
         });
 
-        if (!insertResult.acknowledged || !insertResult.insertedId) {
+        if (!result.acknowledged || !result.insertedId) {
           const error = new Error("Failed to create order.");
 
           error.statusCode = 500;
-
           throw error;
         }
 
-        // ======================================================
-        // CLEAR USER CART
-        // ======================================================
+        // ==================================================
+        // CLEAR CART
+        // ==================================================
 
         const deleteResult = await cartsCollection.deleteMany(
           { email },
-          { session },
+          {
+            session,
+          },
         );
 
         if (!deleteResult.acknowledged) {
-          const error = new Error("Failed to clear cart after creating order.");
+          const error = new Error("Failed to clear cart.");
 
           error.statusCode = 500;
-
           throw error;
         }
 
         createdOrder = {
-          _id: insertResult.insertedId,
-          orderNumber,
+          _id: result.insertedId,
+
           ...orderDocument,
         };
       });
 
-      // ========================================================
+      // ======================================================
       // SUCCESS
-      // ========================================================
+      // ======================================================
 
       return res.status(201).json({
         success: true,
+
         message: "Order placed successfully.",
+
         data: {
           _id: createdOrder._id,
+
           orderNumber: createdOrder.orderNumber,
 
           status: createdOrder.status,
@@ -767,7 +791,7 @@ const ordersRoutes = (
         },
       });
     } catch (error) {
-      console.error("POST /orders ERROR:", error);
+      console.error("POST /orders ERROR:", error?.stack || error);
 
       const statusCode =
         Number.isInteger(error?.statusCode) &&
@@ -780,6 +804,7 @@ const ordersRoutes = (
 
       return res.status(statusCode).json({
         success: false,
+
         message:
           error?.code === 11000
             ? "Order could not be created because of a duplicate order number."
@@ -847,9 +872,7 @@ const ordersRoutes = (
           limit,
           totalOrders,
           totalPages,
-
           hasNextPage: page < totalPages,
-
           hasPrevPage: page > 1,
         },
 
@@ -860,7 +883,7 @@ const ordersRoutes = (
         },
       });
     } catch (error) {
-      console.error("GET /orders ERROR:", error);
+      console.error("GET /orders ERROR:", error?.stack || error);
 
       return res.status(500).json({
         success: false,
@@ -870,370 +893,7 @@ const ordersRoutes = (
   });
 
   // ============================================================
-  // ADMIN: GET ORDER DETAILS
-  // GET /orders/:id
-  // ============================================================
-
-  router.get("/:id", verifyToken, verifyAdmin, async (req, res) => {
-    try {
-      const { id } = req.params;
-
-      if (!isValidObjectId(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid order ID.",
-        });
-      }
-
-      const order = await ordersCollection.findOne({
-        _id: new ObjectId(id),
-      });
-
-      if (!order) {
-        return res.status(404).json({
-          success: false,
-          message: "Order not found.",
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: "Order fetched successfully.",
-
-        data: {
-          ...order,
-          summary: createOrderSummary(order),
-        },
-      });
-    } catch (error) {
-      console.error("GET /orders/:id ERROR:", error);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch order.",
-      });
-    }
-  });
-
-  // ============================================================
-  // USER: GET MY ORDERS
-  // GET /orders/my
-  // ============================================================
-
-  router.get("/my", verifyToken, async (req, res) => {
-    try {
-      const email = normalizeEmail(req.user?.email);
-
-      if (!email) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized.",
-        });
-      }
-
-      const { page, limit, skip } = getPagination(req.query);
-
-      const status = getStatus(req.query.status);
-
-      const sort = getSort(req.query.sort);
-
-      const query = {
-        email,
-      };
-
-      if (status !== "all") {
-        query.status = status;
-      }
-
-      const projection = {
-        items: 0,
-        timeline: 0,
-      };
-
-      const [orders, totalOrders] = await Promise.all([
-        ordersCollection
-          .find(query, {
-            projection,
-          })
-          .sort(SORT_OPTIONS[sort])
-          .skip(skip)
-          .limit(limit)
-          .toArray(),
-
-        ordersCollection.countDocuments(query),
-      ]);
-
-      const totalPages = totalOrders > 0 ? Math.ceil(totalOrders / limit) : 0;
-
-      return res.status(200).json({
-        success: true,
-        message: "Your orders fetched successfully.",
-
-        data: orders,
-
-        pagination: {
-          page,
-          limit,
-          totalOrders,
-          totalPages,
-
-          hasNextPage: page < totalPages,
-
-          hasPrevPage: page > 1,
-        },
-
-        filters: {
-          status,
-          sort,
-        },
-      });
-    } catch (error) {
-      console.error("GET /orders/my ERROR:", error);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch your orders.",
-      });
-    }
-  });
-
-  // ============================================================
-  // USER: GET MY ORDER DETAILS
-  // GET /orders/my/:id
-  // ============================================================
-
-  router.get("/my/:id", verifyToken, async (req, res) => {
-    try {
-      const email = normalizeEmail(req.user?.email);
-
-      if (!email) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized.",
-        });
-      }
-
-      const { id } = req.params;
-
-      if (!isValidObjectId(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid order ID.",
-        });
-      }
-
-      const order = await ordersCollection.findOne({
-        _id: new ObjectId(id),
-        email,
-      });
-
-      if (!order) {
-        return res.status(404).json({
-          success: false,
-          message: "Order not found.",
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: "Order fetched successfully.",
-
-        data: {
-          ...order,
-          summary: createOrderSummary(order),
-        },
-      });
-    } catch (error) {
-      console.error("GET /orders/my/:id ERROR:", error);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch order.",
-      });
-    }
-  });
-
-  // ============================================================
-  // USER: CANCEL MY ORDER
-  // PATCH /orders/cancel/:id
-  // ============================================================
-
-  router.patch("/cancel/:id", verifyToken, async (req, res) => {
-    const session = client.startSession();
-
-    try {
-      const email = normalizeEmail(req.user?.email);
-
-      if (!email) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized.",
-        });
-      }
-
-      const { id } = req.params;
-
-      if (!isValidObjectId(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid order ID.",
-        });
-      }
-
-      const orderId = new ObjectId(id);
-
-      let cancelledOrder = null;
-
-      await session.withTransaction(async () => {
-        const order = await ordersCollection.findOne(
-          {
-            _id: orderId,
-            email,
-          },
-          {
-            session,
-          },
-        );
-
-        if (!order) {
-          const error = new Error("Order not found.");
-
-          error.statusCode = 404;
-
-          throw error;
-        }
-
-        if (order.status === "cancelled") {
-          const error = new Error("Order is already cancelled.");
-
-          error.statusCode = 400;
-
-          throw error;
-        }
-
-        if (["shipped", "delivered"].includes(order.status)) {
-          const error = new Error("This order can no longer be cancelled.");
-
-          error.statusCode = 400;
-
-          throw error;
-        }
-
-        const items = Array.isArray(order.items) ? order.items : [];
-
-        // ==================================================
-        // RESTORE STOCK
-        // ==================================================
-
-        for (const item of items) {
-          const quantity = Number(item?.quantity);
-
-          if (!Number.isInteger(quantity) || quantity < 1) {
-            continue;
-          }
-
-          if (!item?.productId || !ObjectId.isValid(item.productId)) {
-            continue;
-          }
-
-          await productsCollection.updateOne(
-            {
-              _id:
-                item.productId instanceof ObjectId
-                  ? item.productId
-                  : new ObjectId(String(item.productId)),
-            },
-            {
-              $inc: {
-                stock: quantity,
-              },
-              $set: {
-                updatedAt: new Date(),
-              },
-            },
-            {
-              session,
-            },
-          );
-        }
-
-        const now = new Date();
-
-        const result = await ordersCollection.updateOne(
-          {
-            _id: orderId,
-            email,
-            status: {
-              $in: ["pending", "confirmed", "processing"],
-            },
-          },
-          {
-            $set: {
-              status: "cancelled",
-
-              updatedAt: now,
-            },
-
-            $push: {
-              timeline: {
-                status: "cancelled",
-                note: "Order cancelled by customer.",
-                createdAt: now,
-              },
-            },
-          },
-          {
-            session,
-          },
-        );
-
-        if (result.modifiedCount !== 1) {
-          const error = new Error("Order could not be cancelled.");
-
-          error.statusCode = 409;
-
-          throw error;
-        }
-
-        cancelledOrder = {
-          ...order,
-          status: "cancelled",
-          updatedAt: now,
-        };
-      });
-
-      return res.status(200).json({
-        success: true,
-        message: "Order cancelled successfully.",
-
-        data: {
-          _id: cancelledOrder._id,
-
-          orderNumber: cancelledOrder.orderNumber,
-
-          status: cancelledOrder.status,
-
-          updatedAt: cancelledOrder.updatedAt,
-        },
-      });
-    } catch (error) {
-      console.error("PATCH /orders/cancel/:id ERROR:", error);
-
-      const statusCode = Number.isInteger(error?.statusCode)
-        ? error.statusCode
-        : 500;
-
-      return res.status(statusCode).json({
-        success: false,
-        message: error?.message || "Failed to cancel order.",
-      });
-    } finally {
-      await session.endSession();
-    }
-  });
-
-  // ============================================================
-  // ADMIN: ORDER STATISTICS
+  // ADMIN: ORDER STATS
   // GET /orders/stats
   // ============================================================
 
@@ -1288,6 +948,7 @@ const ordersRoutes = (
             {
               $group: {
                 _id: null,
+
                 totalRevenue: {
                   $sum: {
                     $ifNull: ["$grandTotal", 0],
@@ -1303,6 +964,7 @@ const ordersRoutes = (
 
       return res.status(200).json({
         success: true,
+
         message: "Order statistics fetched successfully.",
 
         data: {
@@ -1317,7 +979,7 @@ const ordersRoutes = (
         },
       });
     } catch (error) {
-      console.error("GET /orders/stats ERROR:", error);
+      console.error("GET /orders/stats ERROR:", error?.stack || error);
 
       return res.status(500).json({
         success: false,
@@ -1327,8 +989,364 @@ const ordersRoutes = (
   });
 
   // ============================================================
-  // RETURN ROUTER
+  // USER: GET MY ORDERS
+  // GET /orders/my
   // ============================================================
+
+  router.get(
+    "/my",
+    verifyToken,
+    verifyUser(usersCollection),
+    async (req, res) => {
+      try {
+        const email = normalizeEmail(req.dbUser?.email);
+
+        if (!email) {
+          return res.status(401).json({
+            success: false,
+            message: "Unauthorized.",
+          });
+        }
+
+        const { page, limit, skip } = getPagination(req.query);
+
+        const status = getStatus(req.query.status);
+        const sort = getSort(req.query.sort);
+
+        const query = { email };
+
+        if (status !== "all") {
+          query.status = status;
+        }
+
+        const projection = {
+          items: 0,
+          timeline: 0,
+        };
+
+        const [orders, totalOrders] = await Promise.all([
+          ordersCollection
+            .find(query, { projection })
+            .sort(SORT_OPTIONS[sort])
+            .skip(skip)
+            .limit(limit)
+            .toArray(),
+
+          ordersCollection.countDocuments(query),
+        ]);
+
+        const totalPages = totalOrders > 0 ? Math.ceil(totalOrders / limit) : 0;
+
+        return res.status(200).json({
+          success: true,
+          message: "Your orders fetched successfully.",
+          data: orders,
+          pagination: {
+            page,
+            limit,
+            totalOrders,
+            totalPages,
+            hasNextPage: page < totalPages,
+            hasPrevPage: page > 1,
+          },
+          filters: {
+            status,
+            sort,
+          },
+        });
+      } catch (error) {
+        console.error("GET /orders/my ERROR:", error?.stack || error);
+
+        return res.status(500).json({
+          success: false,
+          message: "Failed to fetch your orders.",
+        });
+      }
+    },
+  );
+
+  // ============================================================
+  // USER: GET MY ORDER DETAILS
+  // GET /orders/my/:id
+  // ============================================================
+
+  router.get("/my/:id", verifyToken, async (req, res) => {
+    try {
+      const email = normalizeEmail(req.user?.email);
+
+      if (!email) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized.",
+        });
+      }
+
+      const { id } = req.params;
+
+      if (!isValidObjectId(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid order ID.",
+        });
+      }
+
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(id),
+        email,
+      });
+
+      if (!order) {
+        return res.status(404).json({
+          success: false,
+          message: "Order not found.",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+
+        message: "Order fetched successfully.",
+
+        data: {
+          ...order,
+
+          summary: createOrderSummary(order),
+        },
+      });
+    } catch (error) {
+      console.error("GET /orders/my/:id ERROR:", error?.stack || error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch order.",
+      });
+    }
+  });
+
+  // ============================================================
+  // ADMIN: GET ORDER DETAILS
+  // GET /orders/:id
+  // ============================================================
+
+  router.get("/:id", verifyToken, verifyAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (!isValidObjectId(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid order ID.",
+        });
+      }
+
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!order) {
+        return res.status(404).json({
+          success: false,
+          message: "Order not found.",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+
+        message: "Order fetched successfully.",
+
+        data: {
+          ...order,
+
+          summary: createOrderSummary(order),
+        },
+      });
+    } catch (error) {
+      console.error("GET /orders/:id ERROR:", error?.stack || error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch order.",
+      });
+    }
+  });
+
+  // ============================================================
+  // USER: CANCEL ORDER
+  // PATCH /orders/cancel/:id
+  // ============================================================
+
+  router.patch("/cancel/:id", verifyToken, async (req, res) => {
+    const session = client.startSession();
+
+    try {
+      const email = normalizeEmail(req.user?.email);
+
+      if (!email) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized.",
+        });
+      }
+
+      const { id } = req.params;
+
+      if (!isValidObjectId(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid order ID.",
+        });
+      }
+
+      const orderId = new ObjectId(id);
+
+      let cancelledOrder = null;
+
+      await session.withTransaction(async () => {
+        const order = await ordersCollection.findOne(
+          {
+            _id: orderId,
+            email,
+          },
+          {
+            session,
+          },
+        );
+
+        if (!order) {
+          const error = new Error("Order not found.");
+
+          error.statusCode = 404;
+          throw error;
+        }
+
+        if (order.status === "cancelled") {
+          const error = new Error("Order is already cancelled.");
+
+          error.statusCode = 400;
+          throw error;
+        }
+
+        if (["shipped", "delivered"].includes(order.status)) {
+          const error = new Error("This order can no longer be cancelled.");
+
+          error.statusCode = 400;
+          throw error;
+        }
+
+        const items = Array.isArray(order.items) ? order.items : [];
+
+        // --------------------------------------------------
+        // RESTORE STOCK
+        // --------------------------------------------------
+
+        for (const item of items) {
+          const quantity = Number(item?.quantity);
+
+          const productId = toObjectId(item?.productId);
+
+          if (!Number.isInteger(quantity) || quantity < 1 || !productId) {
+            continue;
+          }
+
+          await productsCollection.updateOne(
+            {
+              _id: productId,
+            },
+            {
+              $inc: {
+                stock: quantity,
+              },
+
+              $set: {
+                updatedAt: new Date(),
+              },
+            },
+            {
+              session,
+            },
+          );
+        }
+
+        const now = new Date();
+
+        const result = await ordersCollection.updateOne(
+          {
+            _id: orderId,
+            email,
+
+            status: {
+              $in: ["pending", "confirmed", "processing"],
+            },
+          },
+          {
+            $set: {
+              status: "cancelled",
+
+              updatedAt: now,
+            },
+
+            $push: {
+              timeline: {
+                status: "cancelled",
+
+                note: "Order cancelled by customer.",
+
+                createdAt: now,
+              },
+            },
+          },
+          {
+            session,
+          },
+        );
+
+        if (result.modifiedCount !== 1) {
+          const error = new Error("Order could not be cancelled.");
+
+          error.statusCode = 409;
+          throw error;
+        }
+
+        cancelledOrder = {
+          ...order,
+
+          status: "cancelled",
+
+          updatedAt: now,
+        };
+      });
+
+      return res.status(200).json({
+        success: true,
+
+        message: "Order cancelled successfully.",
+
+        data: {
+          _id: cancelledOrder._id,
+
+          orderNumber: cancelledOrder.orderNumber,
+
+          status: cancelledOrder.status,
+
+          updatedAt: cancelledOrder.updatedAt,
+        },
+      });
+    } catch (error) {
+      console.error("PATCH /orders/cancel/:id ERROR:", error?.stack || error);
+
+      const statusCode = Number.isInteger(error?.statusCode)
+        ? error.statusCode
+        : 500;
+
+      return res.status(statusCode).json({
+        success: false,
+        message: error?.message || "Failed to cancel order.",
+      });
+    } finally {
+      await session.endSession();
+    }
+  });
 
   return router;
 };

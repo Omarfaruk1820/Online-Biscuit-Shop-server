@@ -1,7 +1,3 @@
-// ============================================================
-// VERIFY DATABASE USER
-// ============================================================
-
 const verifyUser = (usersCollection) => {
   if (!usersCollection) {
     throw new Error("verifyUser middleware requires usersCollection.");
@@ -14,6 +10,12 @@ const verifyUser = (usersCollection) => {
           ? req.user.email.trim().toLowerCase()
           : "";
 
+      console.log("VERIFY USER DEBUG:", {
+        email,
+        collectionType: typeof usersCollection,
+        hasFindOne: typeof usersCollection?.findOne === "function",
+      });
+
       if (!email) {
         return res.status(401).json({
           success: false,
@@ -21,12 +23,15 @@ const verifyUser = (usersCollection) => {
         });
       }
 
-      // --------------------------------------------------------
-      // Find MongoDB user
-      // --------------------------------------------------------
-
       const user = await usersCollection.findOne({
         email,
+      });
+
+      console.log("VERIFY USER DATABASE RESULT:", {
+        found: Boolean(user),
+        email: user?.email,
+        uid: user?.uid,
+        status: user?.status,
       });
 
       if (!user) {
@@ -36,18 +41,10 @@ const verifyUser = (usersCollection) => {
         });
       }
 
-      // --------------------------------------------------------
-      // Normalize status
-      // --------------------------------------------------------
-
       const status =
         typeof user.status === "string" && user.status.trim()
           ? user.status.trim().toLowerCase()
           : "active";
-
-      // --------------------------------------------------------
-      // Blocked account
-      // --------------------------------------------------------
 
       if (status === "blocked") {
         return res.status(403).json({
@@ -56,10 +53,6 @@ const verifyUser = (usersCollection) => {
         });
       }
 
-      // --------------------------------------------------------
-      // Other inactive status
-      // --------------------------------------------------------
-
       if (status !== "active") {
         return res.status(403).json({
           success: false,
@@ -67,14 +60,16 @@ const verifyUser = (usersCollection) => {
         });
       }
 
-      // --------------------------------------------------------
-      // Attach database user
-      // --------------------------------------------------------
-
       req.dbUser = {
         ...user,
         status,
       };
+
+      console.log("VERIFY USER SUCCESS:", {
+        email: req.dbUser.email,
+        role: req.dbUser.role,
+        status: req.dbUser.status,
+      });
 
       return next();
     } catch (error) {

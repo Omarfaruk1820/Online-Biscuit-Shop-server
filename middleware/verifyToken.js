@@ -1,12 +1,11 @@
-import jwt from "jsonwebtoken";
-
-// ============================================================
-// VERIFY APPLICATION JWT
-// ============================================================
-
 const verifyToken = (req, res, next) => {
   try {
     const token = req.cookies?.token;
+
+    console.log("VERIFY TOKEN DEBUG:", {
+      hasToken: Boolean(token),
+      tokenLength: token?.length || 0,
+    });
 
     if (!token) {
       return res.status(401).json({
@@ -17,9 +16,12 @@ const verifyToken = (req, res, next) => {
 
     const secret = String(process.env.JWT_SECRET || "").trim();
 
-    if (!secret) {
-      console.error("VERIFY TOKEN: JWT_SECRET is missing.");
+    console.log("JWT SECRET DEBUG:", {
+      exists: Boolean(secret),
+      length: secret.length,
+    });
 
+    if (!secret) {
       return res.status(500).json({
         success: false,
         message: "Authentication configuration error.",
@@ -30,6 +32,13 @@ const verifyToken = (req, res, next) => {
       algorithms: ["HS256"],
       issuer: "BiscuitShop",
       audience: "BiscuitShopClient",
+    });
+
+    console.log("JWT DECODED DEBUG:", {
+      email: decoded?.email,
+      type: decoded?.type,
+      issuer: decoded?.iss,
+      audience: decoded?.aud,
     });
 
     if (decoded?.type !== "access") {
@@ -55,7 +64,7 @@ const verifyToken = (req, res, next) => {
       email,
     };
 
-    next();
+    return next();
   } catch (error) {
     console.error("VERIFY TOKEN ERROR:", {
       name: error?.name,

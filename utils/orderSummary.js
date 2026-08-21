@@ -3,14 +3,12 @@ const SHIPPING_CHARGE = 60;
 const TAX_RATE = 0;
 
 const round = (value) => {
-  return Number((Number(value) || 0).toFixed(2));
+  const number = Number(value);
+
+  return Number.isFinite(number) ? Number(number.toFixed(2)) : 0;
 };
 
 const calculateOrderSummary = (items = []) => {
-  // ============================================================
-  // EMPTY ORDER
-  // ============================================================
-
   if (!Array.isArray(items) || items.length === 0) {
     return {
       totalItems: 0,
@@ -23,18 +21,10 @@ const calculateOrderSummary = (items = []) => {
     };
   }
 
-  // ============================================================
-  // TOTALS
-  // ============================================================
-
   let totalItems = 0;
   let totalQuantity = 0;
   let subtotal = 0;
   let totalDiscount = 0;
-
-  // ============================================================
-  // CALCULATE ITEMS
-  // ============================================================
 
   for (const item of items) {
     const quantity = Number(item?.quantity);
@@ -45,7 +35,7 @@ const calculateOrderSummary = (items = []) => {
 
     const price = Math.max(0, Number(item?.price) || 0);
 
-    const finalPrice = Math.max(0, Number(item?.finalPrice) || price);
+    const finalPrice = Math.max(0, Number(item?.finalPrice ?? price));
 
     totalItems += 1;
     totalQuantity += quantity;
@@ -55,34 +45,19 @@ const calculateOrderSummary = (items = []) => {
     totalDiscount += Math.max(0, price - finalPrice) * quantity;
   }
 
-  // ============================================================
-  // ROUND VALUES
-  // ============================================================
-
   subtotal = round(subtotal);
   totalDiscount = round(totalDiscount);
 
-  // ============================================================
-  // SHIPPING
-  // ============================================================
-
-  const shipping = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_CHARGE;
-
-  // ============================================================
-  // TAX
-  // ============================================================
+  const shipping =
+    subtotal >= FREE_SHIPPING_THRESHOLD
+      ? 0
+      : subtotal > 0
+        ? SHIPPING_CHARGE
+        : 0;
 
   const tax = round((subtotal * TAX_RATE) / 100);
 
-  // ============================================================
-  // GRAND TOTAL
-  // ============================================================
-
   const grandTotal = round(subtotal + shipping + tax);
-
-  // ============================================================
-  // RETURN
-  // ============================================================
 
   return {
     totalItems,

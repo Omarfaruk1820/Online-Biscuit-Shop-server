@@ -761,59 +761,147 @@ const authRoutes = (usersCollection) => {
   //     ↓
   // Current MongoDB user
   // ==========================================================
+console.log("REGISTERING GET /orders/my");
 
-  router.get(
-    "/me",
-    verifyToken,
-    verifyUser(usersCollection),
-    async (req, res) => {
-      try {
-        const user = req.dbUser;
+router.get(
+  "/my",
+  (req, res, next) => {
+    console.log("🔥 ORDERS /MY REQUEST REACHED");
+    console.log("METHOD:", req.method);
+    console.log("PATH:", req.path);
+    console.log("ORIGINAL URL:", req.originalUrl);
+    console.log("COOKIES:", req.cookies);
+    next();
+  },
+  verifyToken,
+  verifyUser(usersCollection),
+  async (req, res) => {
+    console.log("🔥 ORDERS /MY HANDLER REACHED");
 
-        if (!user) {
-          return res.status(401).json({
-            success: false,
-            code: "auth/user-unavailable",
-            message: "Authenticated user is unavailable.",
-          });
-        }
+    try {
+      const email = normalizeEmail(req.dbUser?.email);
 
-        // ----------------------------------------------------
-        // ACCOUNT STATUS
-        // ----------------------------------------------------
-
-        const statusError = checkAccountStatus(user);
-
-        if (statusError) {
-          return res.status(403).json(statusError);
-        }
-
-        // ----------------------------------------------------
-        // SUCCESS
-        // ----------------------------------------------------
-
-        return res.status(200).json({
-          success: true,
-
-          code: "auth/session-active",
-
-          user: getSafeUser(user),
-        });
-      } catch (error) {
-        console.error(
-          "GET /auth/me ERROR:",
-          error?.stack || error?.message || error,
-        );
-
-        return res.status(500).json({
+      if (!email) {
+        return res.status(401).json({
           success: false,
-          code: "auth/me-failed",
-          message: "Failed to fetch authenticated user.",
+          message: "Authenticated user information is unavailable.",
         });
       }
-    },
-  );
 
+      const { page, limit, skip } = getPagination(req.query);
+      const status = getStatus(req.query.status);
+      const sort = getSort(req.query.sort);
+
+      const query = { email };
+
+      if (status !== "all") {
+        query.status = status;
+      }
+
+      const projection = {
+        items: 0,
+        timeline: 0,
+      };
+
+      const [orders, totalOrders] = await Promise.all([
+        ordersCollection
+          .find(query, { projection })
+          .sort(SORT_OPTIONS[sort])
+          .skip(skip)
+          .limit(limit)
+          .toArray(),
+
+        ordersCollection.countDocuments(query),
+      ]);
+
+      const totalPages =
+        totalOrders > 0 ? Math.ceil(totalOrders / limit) : 0;
+
+      return res.status(200).json({
+        success: true,
+        message: "Your orders fetched successfully.",
+        data: orders,
+        pagination: {
+          page,
+          limit,
+          totalOrders,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPrevPage: page > 1,
+        },
+        filters: {
+          status,
+          sort,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "GET /orders/my ERROR:",
+        error?.stack || error?.message || error,
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch your orders.",
+      });
+    }
+  },
+);
+
+
+
+
+
+// router.get(
+//   "/my",
+//   verifyToken,
+//   verifyUser(usersCollection),
+//   async (req, res) => {
+//     try {
+//       console.log("ORDERS MY DEBUG:", {
+//         reqUser: req.user,
+//         dbUser: req.dbUser
+//           ? {
+//               email: req.dbUser.email,
+//               uid: req.dbUser.uid,
+//               role: req.dbUser.role,
+//               status: req.dbUser.status,
+//             }
+//           : null,
+//       });
+
+//       const user = req.dbUser;
+
+//       if (!user) {
+//         return res.status(401).json({
+//           success: false,
+//           message: "Authenticated user information is unavailable.",
+//         });
+//       }
+
+//       const email = normalizeEmail(user.email);
+
+//       if (!email) {
+//         return res.status(401).json({
+//           success: false,
+//           message: "Authenticated user email is unavailable.",
+//         });
+//       }
+
+//       // তোমার remaining orders code...
+//     } catch (error) {
+//       console.error(
+//         "GET /orders/my ERROR:",
+//         error?.stack || error?.message || error,
+//       );
+
+//       return res.status(500).json({
+//         success: false,
+//         message: "Failed to fetch your orders.",
+//       });
+//     }
+//   },
+// );
   // ==========================================================
   // POST /auth/logout
   // ==========================================================
