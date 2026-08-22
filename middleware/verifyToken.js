@@ -1,10 +1,25 @@
 const verifyToken = (req, res, next) => {
   try {
+    console.log("========== VERIFY TOKEN START ==========");
+
+    console.log("METHOD:", req.method);
+    console.log("URL:", req.originalUrl);
+
+    console.log("HEADERS:", {
+      origin: req.headers.origin,
+      cookie: req.headers.cookie ? "COOKIE_PRESENT" : "COOKIE_MISSING",
+      authorization: req.headers.authorization
+        ? "AUTHORIZATION_PRESENT"
+        : "AUTHORIZATION_MISSING",
+    });
+
+    console.log("COOKIES OBJECT:", req.cookies);
+
     const token = req.cookies?.token;
 
-    console.log("VERIFY TOKEN DEBUG:", {
-      hasToken: Boolean(token),
-      tokenLength: token?.length || 0,
+    console.log("TOKEN:", {
+      exists: Boolean(token),
+      length: token?.length || 0,
     });
 
     if (!token) {
@@ -16,7 +31,7 @@ const verifyToken = (req, res, next) => {
 
     const secret = String(process.env.JWT_SECRET || "").trim();
 
-    console.log("JWT SECRET DEBUG:", {
+    console.log("JWT SECRET:", {
       exists: Boolean(secret),
       length: secret.length,
     });
@@ -34,7 +49,7 @@ const verifyToken = (req, res, next) => {
       audience: "BiscuitShopClient",
     });
 
-    console.log("JWT DECODED DEBUG:", {
+    console.log("JWT DECODED:", {
       email: decoded?.email,
       type: decoded?.type,
       issuer: decoded?.iss,
@@ -64,26 +79,21 @@ const verifyToken = (req, res, next) => {
       email,
     };
 
-    return next();
-  } catch (error) {
-    console.error("VERIFY TOKEN ERROR:", {
-      name: error?.name,
-      message: error?.message,
+    console.log("VERIFY TOKEN SUCCESS:", {
+      email: req.user.email,
     });
 
-    if (error?.name === "TokenExpiredError") {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication token has expired.",
-      });
-    }
+    console.log("========== VERIFY TOKEN END ==========");
 
-    if (error?.name === "JsonWebTokenError") {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid authentication token.",
-      });
-    }
+    return next();
+  } catch (error) {
+    console.error("========== VERIFY TOKEN ERROR ==========");
+
+    console.error({
+      name: error?.name,
+      message: error?.message,
+      stack: error?.stack,
+    });
 
     return res.status(401).json({
       success: false,
