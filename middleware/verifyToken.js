@@ -1,9 +1,5 @@
 import jwt from "jsonwebtoken";
 
-// ============================================================
-// VERIFY APPLICATION JWT
-// ============================================================
-
 const verifyToken = (req, res, next) => {
   try {
     const token = req.cookies?.token;
@@ -22,11 +18,6 @@ const verifyToken = (req, res, next) => {
 
     const secret = String(process.env.JWT_SECRET || "").trim();
 
-    console.log("JWT SECRET DEBUG:", {
-      exists: Boolean(secret),
-      length: secret.length,
-    });
-
     if (!secret) {
       console.error("VERIFY TOKEN: JWT_SECRET is missing.");
 
@@ -35,10 +26,6 @@ const verifyToken = (req, res, next) => {
         message: "Authentication configuration error.",
       });
     }
-
-    // ========================================================
-    // VERIFY JWT
-    // ========================================================
 
     const decoded = jwt.verify(token, secret, {
       algorithms: ["HS256"],
@@ -53,20 +40,12 @@ const verifyToken = (req, res, next) => {
       audience: decoded?.aud,
     });
 
-    // ========================================================
-    // CHECK TOKEN TYPE
-    // ========================================================
-
     if (decoded?.type !== "access") {
       return res.status(401).json({
         success: false,
         message: "Invalid access token.",
       });
     }
-
-    // ========================================================
-    // GET EMAIL
-    // ========================================================
 
     const email =
       typeof decoded?.email === "string"
@@ -80,16 +59,12 @@ const verifyToken = (req, res, next) => {
       });
     }
 
-    // ========================================================
-    // ATTACH AUTH USER
-    // ========================================================
-
     req.user = {
       email,
     };
 
     console.log("VERIFY TOKEN SUCCESS:", {
-      email: req.user.email,
+      email,
     });
 
     return next();
@@ -97,12 +72,7 @@ const verifyToken = (req, res, next) => {
     console.error("VERIFY TOKEN ERROR:", {
       name: error?.name,
       message: error?.message,
-      stack: error?.stack,
     });
-
-    // ========================================================
-    // TOKEN EXPIRED
-    // ========================================================
 
     if (error?.name === "TokenExpiredError") {
       return res.status(401).json({
@@ -111,20 +81,12 @@ const verifyToken = (req, res, next) => {
       });
     }
 
-    // ========================================================
-    // INVALID JWT
-    // ========================================================
-
     if (error?.name === "JsonWebTokenError") {
       return res.status(401).json({
         success: false,
         message: "Invalid authentication token.",
       });
     }
-
-    // ========================================================
-    // OTHER AUTH ERROR
-    // ========================================================
 
     return res.status(401).json({
       success: false,

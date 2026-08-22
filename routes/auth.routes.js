@@ -18,6 +18,8 @@ const authRoutes = (usersCollection) => {
 
   const router = Router();
 
+  console.log("AUTH ROUTES INITIALIZED");
+
   // ==========================================================
   // HELPERS
   // ==========================================================
@@ -35,15 +37,27 @@ const authRoutes = (usersCollection) => {
   };
 
   const normalizeStatus = (value = "active") => {
-    return normalizeString(value).toLowerCase() === "blocked"
-      ? "blocked"
-      : "active";
+    const status = normalizeString(value).toLowerCase();
+
+    if (status === "blocked") {
+      return "blocked";
+    }
+
+    if (status === "active") {
+      return "active";
+    }
+
+    return "inactive";
   };
 
   const normalizeProvider = (value = "password") => {
     const provider = normalizeString(value).toLowerCase();
 
-    return provider === "google.com" ? "google.com" : "password";
+    if (provider === "google.com") {
+      return "google.com";
+    }
+
+    return "password";
   };
 
   // ==========================================================
@@ -76,27 +90,16 @@ const authRoutes = (usersCollection) => {
 
     return {
       _id: user._id || null,
-
       uid: normalizeString(user.uid),
-
       name: normalizeString(user.name),
-
       email: normalizeEmail(user.email),
-
       photo: normalizeString(user.photo),
-
       emailVerified: Boolean(user.emailVerified),
-
       role: normalizeRole(user.role),
-
       status: normalizeStatus(user.status),
-
       provider: normalizeProvider(user.provider),
-
       createdAt: user.createdAt || null,
-
       updatedAt: user.updatedAt || null,
-
       lastLogin: user.lastLogin || null,
     };
   };
@@ -126,15 +129,6 @@ const authRoutes = (usersCollection) => {
       firebaseUser?.email_verified ?? firebaseUser?.emailVerified ?? false,
     );
 
-    // Firebase Admin decoded token normally contains:
-    //
-    // firebase.sign_in_provider
-    //
-    // Example:
-    //
-    // password
-    // google.com
-
     const providerId =
       firebaseUser?.firebase?.sign_in_provider ||
       firebaseUser?.providerData?.[0]?.providerId ||
@@ -146,15 +140,10 @@ const authRoutes = (usersCollection) => {
 
     return {
       uid,
-
       email,
-
       name: name.slice(0, 100),
-
       photo,
-
       emailVerified,
-
       provider,
     };
   };
@@ -166,30 +155,20 @@ const authRoutes = (usersCollection) => {
   const findUserByFirebaseIdentity = async ({ uid, email }) => {
     let user = null;
 
-    // --------------------------------------------------------
-    // FIRST: FIND BY FIREBASE UID
-    // --------------------------------------------------------
-
+    // First try Firebase UID
     if (uid) {
       user = await usersCollection.findOne(
-        {
-          uid,
-        },
+        { uid },
         {
           projection: userProjection,
         },
       );
     }
 
-    // --------------------------------------------------------
-    // SECOND: FIND BY EMAIL
-    // --------------------------------------------------------
-
+    // If UID not found, try email
     if (!user && email) {
       user = await usersCollection.findOne(
-        {
-          email,
-        },
+        { email },
         {
           projection: userProjection,
         },
@@ -231,25 +210,11 @@ const authRoutes = (usersCollection) => {
 
   // ==========================================================
   // POST /auth/register
-  //
-  // OPTION 2
-  //
-  // Firebase
-  //    ↓
-  // MongoDB
-  //
-  // JWT is NOT created here.
-  //
-  // AuthProvider will call /auth/jwt immediately after this.
   // ==========================================================
 
   router.post("/register", verifyFirebaseToken, async (req, res) => {
     try {
       const firebaseUser = req.firebaseUser;
-
-      // ----------------------------------------------------
-      // FIREBASE USER CHECK
-      // ----------------------------------------------------
 
       if (!firebaseUser?.uid) {
         return res.status(401).json({
@@ -258,10 +223,6 @@ const authRoutes = (usersCollection) => {
           message: "Firebase authentication failed.",
         });
       }
-
-      // ----------------------------------------------------
-      // FIREBASE DATA
-      // ----------------------------------------------------
 
       const { uid, email, name, photo, emailVerified, provider } =
         getFirebaseUserData(firebaseUser, req.body);
@@ -282,28 +243,25 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------
+      // ------------------------------------------------------
       // FIND EXISTING USER
-      // ----------------------------------------------------
+      // ------------------------------------------------------
 
       const existingUser = await findUserByFirebaseIdentity({
         uid,
         email,
       });
 
-      // ====================================================
+      // ======================================================
       // EXISTING USER
-      // ====================================================
+      // ======================================================
 
       if (existingUser) {
-        // --------------------------------------------------
-        // EMAIL CONFLICT
-        // --------------------------------------------------
+        const existingEmail = normalizeEmail(existingUser.email);
+        const existingUid = normalizeString(existingUser.uid);
 
-        if (
-          existingUser.email &&
-          normalizeEmail(existingUser.email) !== email
-        ) {
+        // Email conflict
+        if (existingEmail && existingEmail !== email) {
           return res.status(409).json({
             success: false,
             code: "user/email-conflict",
@@ -311,11 +269,8 @@ const authRoutes = (usersCollection) => {
           });
         }
 
-        // --------------------------------------------------
-        // UID CONFLICT
-        // --------------------------------------------------
-
-        if (existingUser.uid && normalizeString(existingUser.uid) !== uid) {
+        // UID conflict
+        if (existingUid && existingUid !== uid) {
           return res.status(409).json({
             success: false,
             code: "user/uid-conflict",
@@ -323,31 +278,24 @@ const authRoutes = (usersCollection) => {
           });
         }
 
-        // --------------------------------------------------
-        // ACCOUNT STATUS
-        // --------------------------------------------------
-
+        // Account status
         const statusError = checkAccountStatus(existingUser);
 
         if (statusError) {
           return res.status(403).json(statusError);
         }
 
-        // --------------------------------------------------
+        // ----------------------------------------------------
         // UPDATE EXISTING USER
-        // --------------------------------------------------
+        // ----------------------------------------------------
 
         const now = new Date();
 
         const updateData = {
           uid,
-
           email,
-
           emailVerified,
-
           provider,
-
           updatedAt: now,
         };
 
@@ -367,10 +315,6 @@ const authRoutes = (usersCollection) => {
             $set: updateData,
           },
         );
-
-        // --------------------------------------------------
-        // GET UPDATED USER
-        // --------------------------------------------------
 
         const updatedUser = await usersCollection.findOne(
           {
@@ -397,47 +341,25 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ====================================================
-      // NEW USER
-      // ====================================================
+      // ======================================================
+      // CREATE NEW USER
+      // ======================================================
 
       const now = new Date();
 
       const newUser = {
         uid,
-
         name,
-
         email,
-
         photo,
-
         emailVerified,
-
-        // --------------------------------------------------
-        // NEVER TRUST FRONTEND ROLE
-        // --------------------------------------------------
-
         role: "user",
-
-        // --------------------------------------------------
-        // DEFAULT ACCOUNT STATUS
-        // --------------------------------------------------
-
         status: "active",
-
         provider,
-
         createdAt: now,
-
         updatedAt: now,
-
         lastLogin: null,
       };
-
-      // ----------------------------------------------------
-      // INSERT USER
-      // ----------------------------------------------------
 
       const result = await usersCollection.insertOne(newUser);
 
@@ -449,27 +371,15 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------
-      // CREATED USER
-      // ----------------------------------------------------
-
       const createdUser = {
         ...newUser,
-
         _id: result.insertedId,
       };
 
-      // ----------------------------------------------------
-      // SUCCESS
-      // ----------------------------------------------------
-
       return res.status(201).json({
         success: true,
-
         code: "user/created",
-
         message: "User account created successfully.",
-
         user: getSafeUser(createdUser),
       });
     } catch (error) {
@@ -477,10 +387,6 @@ const authRoutes = (usersCollection) => {
         "POST /auth/register ERROR:",
         error?.stack || error?.message || error,
       );
-
-      // ----------------------------------------------------
-      // DUPLICATE KEY
-      // ----------------------------------------------------
 
       if (error?.code === 11000) {
         return res.status(409).json({
@@ -500,40 +406,11 @@ const authRoutes = (usersCollection) => {
 
   // ==========================================================
   // POST /auth/jwt
-  //
-  // OPTION 2 IMPORTANT ROUTE
-  //
-  // Firebase token
-  //      ↓
-  // Find MongoDB user
-  //      ↓
-  // Check account
-  //      ↓
-  // Create JWT
-  //      ↓
-  // HTTP-only cookie
-  //
-  // IMPORTANT:
-  //
-  // EMAIL VERIFICATION IS NOT REQUIRED HERE.
-  //
-  // This allows:
-  //
-  // Register
-  //    ↓
-  // Automatically Logged In
-  //    ↓
-  // Home
-  //
   // ==========================================================
 
   router.post("/jwt", verifyFirebaseToken, async (req, res) => {
     try {
       const firebaseUser = req.firebaseUser;
-
-      // ----------------------------------------------------
-      // FIREBASE USER CHECK
-      // ----------------------------------------------------
 
       if (!firebaseUser?.uid) {
         return res.status(401).json({
@@ -543,32 +420,20 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------
-      // FIREBASE DATA
-      // ----------------------------------------------------
-
       const { uid, email, emailVerified, provider } =
         getFirebaseUserData(firebaseUser);
 
-      if (!uid) {
+      if (!uid || !email) {
         return res.status(401).json({
           success: false,
-          code: "auth/firebase-uid-missing",
-          message: "Firebase UID is missing.",
+          code: "auth/firebase-user-invalid",
+          message: "Firebase user information is invalid.",
         });
       }
 
-      if (!email) {
-        return res.status(401).json({
-          success: false,
-          code: "auth/firebase-email-missing",
-          message: "Firebase account email is missing.",
-        });
-      }
-
-      // ----------------------------------------------------
-      // FIND USER
-      // ----------------------------------------------------
+      // ------------------------------------------------------
+      // FIND DATABASE USER
+      // ------------------------------------------------------
 
       const user = await findUserByFirebaseIdentity({
         uid,
@@ -583,9 +448,9 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------
-      // EMAIL CHECK
-      // ----------------------------------------------------
+      // ------------------------------------------------------
+      // VERIFY EMAIL
+      // ------------------------------------------------------
 
       const databaseEmail = normalizeEmail(user.email);
 
@@ -605,9 +470,9 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------
-      // UID CHECK
-      // ----------------------------------------------------
+      // ------------------------------------------------------
+      // VERIFY UID
+      // ------------------------------------------------------
 
       if (user.uid && normalizeString(user.uid) !== uid) {
         return res.status(403).json({
@@ -617,9 +482,9 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ----------------------------------------------------
+      // ------------------------------------------------------
       // ACCOUNT STATUS
-      // ----------------------------------------------------
+      // ------------------------------------------------------
 
       const statusError = checkAccountStatus(user);
 
@@ -627,33 +492,20 @@ const authRoutes = (usersCollection) => {
         return res.status(403).json(statusError);
       }
 
-      // ----------------------------------------------------
+      // ------------------------------------------------------
       // UPDATE LOGIN INFORMATION
-      //
-      // emailVerified can be false here.
-      //
-      // THIS IS INTENTIONAL FOR OPTION 2.
-      // ----------------------------------------------------
+      // ------------------------------------------------------
 
       const now = new Date();
 
       const updateData = {
         uid,
-
         email,
-
         emailVerified,
-
         provider,
-
         lastLogin: now,
-
         updatedAt: now,
       };
-
-      // ----------------------------------------------------
-      // UPDATE NAME
-      // ----------------------------------------------------
 
       const firebaseName = normalizeString(
         firebaseUser?.name || firebaseUser?.displayName || "",
@@ -663,10 +515,6 @@ const authRoutes = (usersCollection) => {
         updateData.name = firebaseName.slice(0, 100);
       }
 
-      // ----------------------------------------------------
-      // UPDATE PHOTO
-      // ----------------------------------------------------
-
       const firebasePhoto = normalizeString(
         firebaseUser?.picture || firebaseUser?.photoURL || "",
       );
@@ -674,10 +522,6 @@ const authRoutes = (usersCollection) => {
       if (firebasePhoto) {
         updateData.photo = firebasePhoto;
       }
-
-      // ----------------------------------------------------
-      // UPDATE DATABASE
-      // ----------------------------------------------------
 
       await usersCollection.updateOne(
         {
@@ -688,9 +532,9 @@ const authRoutes = (usersCollection) => {
         },
       );
 
-      // ----------------------------------------------------
+      // ------------------------------------------------------
       // GET UPDATED USER
-      // ----------------------------------------------------
+      // ------------------------------------------------------
 
       const updatedUser = await usersCollection.findOne(
         {
@@ -709,31 +553,28 @@ const authRoutes = (usersCollection) => {
         });
       }
 
-      // ====================================================
+      // ------------------------------------------------------
       // CREATE APPLICATION JWT
-      // ====================================================
+      // ------------------------------------------------------
 
       const token = createToken({
         email: databaseEmail,
       });
 
-      // ====================================================
-      // SAVE JWT IN HTTP-ONLY COOKIE
-      // ====================================================
+      // ------------------------------------------------------
+      // SAVE JWT COOKIE
+      // ------------------------------------------------------
 
       res.cookie("token", token, cookieOptions);
 
-      // ====================================================
+      // ------------------------------------------------------
       // SUCCESS
-      // ====================================================
+      // ------------------------------------------------------
 
       return res.status(200).json({
         success: true,
-
         code: "auth/session-created",
-
         message: "Authentication session created successfully.",
-
         user: getSafeUser(updatedUser),
       });
     } catch (error) {
@@ -752,156 +593,50 @@ const authRoutes = (usersCollection) => {
 
   // ==========================================================
   // GET /auth/me
-  //
-  // JWT COOKIE
-  //     ↓
-  // verifyToken
-  //     ↓
-  // verifyUser
-  //     ↓
-  // Current MongoDB user
   // ==========================================================
-console.log("REGISTERING GET /orders/my");
 
-router.get(
-  "/my",
-  (req, res, next) => {
-    console.log("🔥 ORDERS /MY REQUEST REACHED");
-    console.log("METHOD:", req.method);
-    console.log("PATH:", req.path);
-    console.log("ORIGINAL URL:", req.originalUrl);
-    console.log("COOKIES:", req.cookies);
-    next();
-  },
-  verifyToken,
-  verifyUser(usersCollection),
-  async (req, res) => {
-    console.log("🔥 ORDERS /MY HANDLER REACHED");
+  router.get(
+    "/me",
+    verifyToken,
+    verifyUser(usersCollection),
+    async (req, res) => {
+      try {
+        const user = req.dbUser;
 
-    try {
-      const email = normalizeEmail(req.dbUser?.email);
+        if (!user) {
+          return res.status(401).json({
+            success: false,
+            code: "auth/user-unavailable",
+            message: "Authenticated user is unavailable.",
+          });
+        }
 
-      if (!email) {
-        return res.status(401).json({
+        const statusError = checkAccountStatus(user);
+
+        if (statusError) {
+          return res.status(403).json(statusError);
+        }
+
+        return res.status(200).json({
+          success: true,
+          code: "auth/session-active",
+          user: getSafeUser(user),
+        });
+      } catch (error) {
+        console.error(
+          "GET /auth/me ERROR:",
+          error?.stack || error?.message || error,
+        );
+
+        return res.status(500).json({
           success: false,
-          message: "Authenticated user information is unavailable.",
+          code: "auth/me-failed",
+          message: "Failed to fetch authenticated user.",
         });
       }
+    },
+  );
 
-      const { page, limit, skip } = getPagination(req.query);
-      const status = getStatus(req.query.status);
-      const sort = getSort(req.query.sort);
-
-      const query = { email };
-
-      if (status !== "all") {
-        query.status = status;
-      }
-
-      const projection = {
-        items: 0,
-        timeline: 0,
-      };
-
-      const [orders, totalOrders] = await Promise.all([
-        ordersCollection
-          .find(query, { projection })
-          .sort(SORT_OPTIONS[sort])
-          .skip(skip)
-          .limit(limit)
-          .toArray(),
-
-        ordersCollection.countDocuments(query),
-      ]);
-
-      const totalPages =
-        totalOrders > 0 ? Math.ceil(totalOrders / limit) : 0;
-
-      return res.status(200).json({
-        success: true,
-        message: "Your orders fetched successfully.",
-        data: orders,
-        pagination: {
-          page,
-          limit,
-          totalOrders,
-          totalPages,
-          hasNextPage: page < totalPages,
-          hasPrevPage: page > 1,
-        },
-        filters: {
-          status,
-          sort,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "GET /orders/my ERROR:",
-        error?.stack || error?.message || error,
-      );
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch your orders.",
-      });
-    }
-  },
-);
-
-
-
-
-
-// router.get(
-//   "/my",
-//   verifyToken,
-//   verifyUser(usersCollection),
-//   async (req, res) => {
-//     try {
-//       console.log("ORDERS MY DEBUG:", {
-//         reqUser: req.user,
-//         dbUser: req.dbUser
-//           ? {
-//               email: req.dbUser.email,
-//               uid: req.dbUser.uid,
-//               role: req.dbUser.role,
-//               status: req.dbUser.status,
-//             }
-//           : null,
-//       });
-
-//       const user = req.dbUser;
-
-//       if (!user) {
-//         return res.status(401).json({
-//           success: false,
-//           message: "Authenticated user information is unavailable.",
-//         });
-//       }
-
-//       const email = normalizeEmail(user.email);
-
-//       if (!email) {
-//         return res.status(401).json({
-//           success: false,
-//           message: "Authenticated user email is unavailable.",
-//         });
-//       }
-
-//       // তোমার remaining orders code...
-//     } catch (error) {
-//       console.error(
-//         "GET /orders/my ERROR:",
-//         error?.stack || error?.message || error,
-//       );
-
-//       return res.status(500).json({
-//         success: false,
-//         message: "Failed to fetch your orders.",
-//       });
-//     }
-//   },
-// );
   // ==========================================================
   // POST /auth/logout
   // ==========================================================
@@ -910,15 +645,12 @@ router.get(
     try {
       res.clearCookie("token", {
         ...cookieOptions,
-
         maxAge: 0,
       });
 
       return res.status(200).json({
         success: true,
-
         code: "auth/logout-success",
-
         message: "Logout successful.",
       });
     } catch (error) {
@@ -929,9 +661,7 @@ router.get(
 
       return res.status(500).json({
         success: false,
-
         code: "auth/logout-failed",
-
         message: "Logout failed.",
       });
     }
