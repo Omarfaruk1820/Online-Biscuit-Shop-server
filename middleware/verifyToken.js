@@ -1,25 +1,16 @@
+import jwt from "jsonwebtoken";
+
+// ============================================================
+// VERIFY APPLICATION JWT
+// ============================================================
+
 const verifyToken = (req, res, next) => {
   try {
-    console.log("========== VERIFY TOKEN START ==========");
-
-    console.log("METHOD:", req.method);
-    console.log("URL:", req.originalUrl);
-
-    console.log("HEADERS:", {
-      origin: req.headers.origin,
-      cookie: req.headers.cookie ? "COOKIE_PRESENT" : "COOKIE_MISSING",
-      authorization: req.headers.authorization
-        ? "AUTHORIZATION_PRESENT"
-        : "AUTHORIZATION_MISSING",
-    });
-
-    console.log("COOKIES OBJECT:", req.cookies);
-
     const token = req.cookies?.token;
 
-    console.log("TOKEN:", {
-      exists: Boolean(token),
-      length: token?.length || 0,
+    console.log("VERIFY TOKEN DEBUG:", {
+      hasToken: Boolean(token),
+      tokenLength: token?.length || 0,
     });
 
     if (!token) {
@@ -31,17 +22,23 @@ const verifyToken = (req, res, next) => {
 
     const secret = String(process.env.JWT_SECRET || "").trim();
 
-    console.log("JWT SECRET:", {
+    console.log("JWT SECRET DEBUG:", {
       exists: Boolean(secret),
       length: secret.length,
     });
 
     if (!secret) {
+      console.error("VERIFY TOKEN: JWT_SECRET is missing.");
+
       return res.status(500).json({
         success: false,
         message: "Authentication configuration error.",
       });
     }
+
+    // ========================================================
+    // VERIFY JWT
+    // ========================================================
 
     const decoded = jwt.verify(token, secret, {
       algorithms: ["HS256"],
@@ -49,12 +46,16 @@ const verifyToken = (req, res, next) => {
       audience: "BiscuitShopClient",
     });
 
-    console.log("JWT DECODED:", {
+    console.log("JWT DECODED DEBUG:", {
       email: decoded?.email,
       type: decoded?.type,
       issuer: decoded?.iss,
       audience: decoded?.aud,
     });
+
+    // ========================================================
+    // CHECK TOKEN TYPE
+    // ========================================================
 
     if (decoded?.type !== "access") {
       return res.status(401).json({
@@ -62,6 +63,10 @@ const verifyToken = (req, res, next) => {
         message: "Invalid access token.",
       });
     }
+
+    // ========================================================
+    // GET EMAIL
+    // ========================================================
 
     const email =
       typeof decoded?.email === "string"
@@ -75,6 +80,10 @@ const verifyToken = (req, res, next) => {
       });
     }
 
+    // ========================================================
+    // ATTACH AUTH USER
+    // ========================================================
+
     req.user = {
       email,
     };
@@ -83,17 +92,39 @@ const verifyToken = (req, res, next) => {
       email: req.user.email,
     });
 
-    console.log("========== VERIFY TOKEN END ==========");
-
     return next();
   } catch (error) {
-    console.error("========== VERIFY TOKEN ERROR ==========");
-
-    console.error({
+    console.error("VERIFY TOKEN ERROR:", {
       name: error?.name,
       message: error?.message,
       stack: error?.stack,
     });
+
+    // ========================================================
+    // TOKEN EXPIRED
+    // ========================================================
+
+    if (error?.name === "TokenExpiredError") {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication token has expired.",
+      });
+    }
+
+    // ========================================================
+    // INVALID JWT
+    // ========================================================
+
+    if (error?.name === "JsonWebTokenError") {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authentication token.",
+      });
+    }
+
+    // ========================================================
+    // OTHER AUTH ERROR
+    // ========================================================
 
     return res.status(401).json({
       success: false,
