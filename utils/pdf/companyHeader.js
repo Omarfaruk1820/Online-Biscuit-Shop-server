@@ -1,88 +1,191 @@
-// utils/invoice/companyHeader.js
+// utils/pdf/companyHeader.js
+
+const COLORS = {
+  primary: "#2563EB",
+  dark: "#0F172A",
+  text: "#374151",
+  muted: "#64748B",
+  border: "#D1D5DB",
+  light: "#F8FAFC",
+};
+
+const PAGE = {
+  left: 50,
+  right: 545,
+  width: 495,
+};
+
+const safeText = (value, fallback = "-") => {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  const text = String(value).trim();
+
+  return text || fallback;
+};
+
+const formatDate = (value) => {
+  if (!value) {
+    return "-";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  return date.toLocaleString("en-BD", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
 
 const drawCompanyHeader = (doc, invoice) => {
+  const shop = invoice?.shop || {};
+
+  const companyName = safeText(shop.name, "Your Store");
+  const slogan = safeText(shop.slogan, "");
+
+  const address = safeText(shop.address);
+  const phone = safeText(shop.phone);
+  const email = safeText(shop.email);
+  const website = safeText(shop.website);
+
+  const invoiceNumber = safeText(invoice?.invoiceNumber, "INV-NOT-AVAILABLE");
+
+  const orderNumber = safeText(invoice?.orderNumber);
+  const orderId = safeText(invoice?.orderId);
+
+  const orderDate = formatDate(invoice?.orderDate);
+
   let y = 50;
 
-  // ======================================================
+  // ============================================================
   // COMPANY NAME
-  // ======================================================
+  // ============================================================
 
   doc
-    .fillColor("#0F172A")
+    .fillColor(COLORS.dark)
     .font("Helvetica-Bold")
-    .fontSize(26)
-    .text(invoice.shop.name, 50, y);
+    .fontSize(25)
+    .text(companyName, PAGE.left, y, {
+      width: 280,
+      ellipsis: true,
+    });
 
-  // ======================================================
+  // ============================================================
   // COMPANY SLOGAN
-  // ======================================================
+  // ============================================================
 
-  doc
-    .fillColor("#64748B")
-    .font("Helvetica")
-    .fontSize(11)
-    .text(invoice.shop.slogan || "", 50, y + 30);
+  if (slogan) {
+    doc
+      .fillColor(COLORS.muted)
+      .font("Helvetica")
+      .fontSize(10)
+      .text(slogan, PAGE.left, y + 31, {
+        width: 280,
+        ellipsis: true,
+      });
+  }
 
-  // ======================================================
+  // ============================================================
   // COMPANY INFORMATION
-  // ======================================================
+  // ============================================================
 
-  doc
-    .fillColor("#374151")
-    .font("Helvetica")
-    .fontSize(10)
-    .text(`Address : ${invoice.shop.address}`, 50, y + 55)
-    .text(`Phone   : ${invoice.shop.phone}`, 50, y + 72)
-    .text(`Email   : ${invoice.shop.email}`, 50, y + 89)
-    .text(`Website : ${invoice.shop.website}`, 50, y + 106);
+  let companyInfoY = y + 53;
 
-  // ======================================================
+  const companyLines = [
+    `Address: ${address}`,
+    `Phone: ${phone}`,
+    `Email: ${email}`,
+    `Website: ${website}`,
+  ];
+
+  doc.fillColor(COLORS.text).font("Helvetica").fontSize(9);
+
+  companyLines.forEach((line) => {
+    doc.text(line, PAGE.left, companyInfoY, {
+      width: 275,
+      ellipsis: true,
+    });
+
+    companyInfoY += 15;
+  });
+
+  // ============================================================
   // INVOICE TITLE
-  // ======================================================
+  // ============================================================
 
   doc
-    .fillColor("#2563EB")
+    .fillColor(COLORS.primary)
     .font("Helvetica-Bold")
-    .fontSize(28)
-    .text("INVOICE", 380, y, {
-      width: 165,
+    .fontSize(27)
+    .text("INVOICE", 360, y, {
+      width: 185,
       align: "right",
     });
 
-  // ======================================================
+  // ============================================================
   // INVOICE DETAILS
-  // ======================================================
+  // ============================================================
 
-  doc.fillColor("#111827").font("Helvetica").fontSize(10);
+  const detailsX = 325;
+  const detailsWidth = 220;
 
-  doc.text(`Invoice No : ${invoice.invoiceNumber}`, 340, y + 45);
+  const invoiceDetails = [
+    ["Invoice No", invoiceNumber],
+    ["Order No", orderNumber],
+    ["Order ID", orderId],
+    ["Order Date", orderDate],
+  ];
 
-  doc.text(`Order No   : ${invoice.orderNumber}`, 340, y + 62);
+  let detailsY = y + 45;
 
-  doc.text(`Order ID   : ${invoice.orderId}`, 340, y + 79);
+  invoiceDetails.forEach(([label, value]) => {
+    doc
+      .fillColor(COLORS.muted)
+      .font("Helvetica")
+      .fontSize(9)
+      .text(`${label}:`, detailsX, detailsY, {
+        width: 65,
+      });
 
-  doc.text(
-    `Order Date : ${new Date(invoice.orderDate).toLocaleString()}`,
-    340,
-    y + 96,
-  );
+    doc
+      .fillColor(COLORS.text)
+      .font("Helvetica-Bold")
+      .fontSize(9)
+      .text(value, detailsX + 65, detailsY, {
+        width: detailsWidth - 65,
+        align: "right",
+        ellipsis: true,
+      });
 
-  // ======================================================
-  // DIVIDER
-  // ======================================================
+    detailsY += 17;
+  });
+
+  // ============================================================
+  // HEADER DIVIDER
+  // ============================================================
+
+  const dividerY = Math.max(companyInfoY, detailsY) + 12;
 
   doc
-    .moveTo(50, 180)
-    .lineTo(545, 180)
-    .strokeColor("#D1D5DB")
+    .moveTo(PAGE.left, dividerY)
+    .lineTo(PAGE.right, dividerY)
+    .strokeColor(COLORS.border)
     .lineWidth(1)
     .stroke();
 
-  // ======================================================
+  // ============================================================
   // RETURN NEXT Y POSITION
-  // ======================================================
+  // ============================================================
 
-  return 195;
+  return dividerY + 18;
 };
 
 export default drawCompanyHeader;

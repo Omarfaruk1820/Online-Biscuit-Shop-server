@@ -1,161 +1,355 @@
+// utils/pdf/summarySection.js
+
+const COLORS = {
+  dark: "#111827",
+  text: "#374151",
+  muted: "#64748B",
+  border: "#D1D5DB",
+  light: "#F8FAFC",
+  primary: "#2563EB",
+  primaryLight: "#EFF6FF",
+  success: "#15803D",
+};
+
+const PAGE = {
+  left: 50,
+  right: 545,
+  width: 495,
+  bottom: 750,
+};
+
+const safeText = (value, fallback = "-") => {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  const text = String(value).trim();
+
+  return text || fallback;
+};
+
+const safeNumber = (value, fallback = 0) => {
+  const number = Number(value);
+
+  return Number.isFinite(number) ? number : fallback;
+};
+
+const formatMoney = (currency, value) => {
+  return `${currency} ${safeNumber(value).toFixed(2)}`;
+};
+
+const formatStatus = (value, fallback = "Pending") => {
+  const normalized = safeText(value, fallback)
+    .replace(/[_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return normalized.replace(/\b\w/g, (character) => character.toUpperCase());
+};
+
+const drawSummaryRow = (doc, label, value, x, y, valueWidth) => {
+  doc.fillColor(COLORS.text).font("Helvetica").fontSize(9).text(label, x, y);
+
+  doc
+    .fillColor(COLORS.text)
+    .font("Helvetica")
+    .fontSize(9)
+    .text(value, x + 90, y, {
+      width: valueWidth,
+      align: "right",
+    });
+};
+
 const drawSummarySection = (doc, invoice, startY) => {
-  let y = startY + 25;
+  const summary = invoice?.summary || {};
+  const shop = invoice?.shop || {};
+  const payment = invoice?.payment || {};
+  const shipping = invoice?.shipping || {};
+
+  const currency = safeText(shop.currency, "BDT");
+
+  // ============================================================
+  // VALUES
+  // ============================================================
+
+  const totalItems = safeNumber(summary.totalItems ?? invoice?.totalItems);
+
+  const totalQuantity = safeNumber(
+    summary.totalQuantity ?? invoice?.totalQuantity,
+  );
+
+  const subtotal = safeNumber(summary.subtotal ?? invoice?.subtotal);
+
+  const shippingCharge = safeNumber(
+    summary.shippingCharge ?? invoice?.shippingCharge ?? invoice?.shipping,
+  );
+
+  const tax = safeNumber(summary.tax ?? invoice?.tax);
+
+  const discount = safeNumber(summary.discount ?? invoice?.totalDiscount);
+
+  const grandTotal = safeNumber(summary.grandTotal ?? invoice?.grandTotal);
+
+  // ============================================================
+  // POSITION
+  // ============================================================
+
+  let y = startY + 20;
 
   if (y > 560) {
     doc.addPage();
     y = 60;
   }
 
+  // ============================================================
+  // ORDER SUMMARY TITLE
+  // ============================================================
+
   doc
-    .fillColor("#111827")
+    .fillColor(COLORS.dark)
     .font("Helvetica-Bold")
-    .fontSize(16)
-    .text("Order Summary", 320, y);
+    .fontSize(15)
+    .text("Order Summary", 315, y);
 
-  y += 28;
+  y += 25;
+
+  // ============================================================
+  // SUMMARY CARD
+  // ============================================================
+
+  const cardX = 315;
+  const cardWidth = 230;
+  const cardHeight = 215;
+
+  doc.roundedRect(cardX, y, cardWidth, cardHeight, 7).fill(COLORS.light);
 
   doc
-    .roundedRect(315, y, 230, 185, 6)
+    .roundedRect(cardX, y, cardWidth, cardHeight, 7)
     .lineWidth(1)
-    .strokeColor("#D1D5DB")
+    .strokeColor(COLORS.border)
     .stroke();
 
-  let sy = y + 18;
+  let rowY = y + 18;
 
-  doc.font("Helvetica").fontSize(10).fillColor("#374151");
+  // ============================================================
+  // ITEM COUNTS
+  // ============================================================
 
-  doc.text("Total Items", 330, sy);
+  drawSummaryRow(doc, "Total Items", String(totalItems), cardX + 15, rowY, 110);
 
-  doc.text(String(invoice.summary.totalItems), 505, sy, {
-    width: 30,
-    align: "right",
-  });
+  rowY += 22;
 
-  sy += 22;
-
-  doc.text("Total Quantity", 330, sy);
-
-  doc.text(String(invoice.summary.totalQuantity), 505, sy, {
-    width: 30,
-    align: "right",
-  });
-
-  sy += 22;
-
-  doc.text("Subtotal", 330, sy);
-
-  doc.text(
-    `${invoice.shop.currency} ${Number(invoice.summary.subtotal).toFixed(2)}`,
-    420,
-    sy,
-    {
-      width: 115,
-      align: "right",
-    },
+  drawSummaryRow(
+    doc,
+    "Total Quantity",
+    String(totalQuantity),
+    cardX + 15,
+    rowY,
+    110,
   );
 
-  sy += 22;
+  rowY += 24;
 
-  doc.text("Shipping", 330, sy);
+  // ============================================================
+  // MONEY VALUES
+  // ============================================================
 
-  doc.text(
-    `${invoice.shop.currency} ${Number(invoice.summary.shippingCharge).toFixed(
-      2,
-    )}`,
-    420,
-    sy,
-    {
-      width: 115,
-      align: "right",
-    },
+  drawSummaryRow(
+    doc,
+    "Subtotal",
+    formatMoney(currency, subtotal),
+    cardX + 15,
+    rowY,
+    110,
   );
 
-  sy += 22;
+  rowY += 22;
 
-  //-------------------------------------------------------
-  // Tax
-  //-------------------------------------------------------
-
-  doc.text("VAT / Tax", 330, sy);
-
-  doc.text(
-    `${invoice.shop.currency} ${Number(invoice.summary.tax).toFixed(2)}`,
-    420,
-    sy,
-    {
-      width: 115,
-      align: "right",
-    },
+  drawSummaryRow(
+    doc,
+    "Discount",
+    `-${formatMoney(currency, discount)}`,
+    cardX + 15,
+    rowY,
+    110,
   );
 
-  sy += 22;
+  rowY += 22;
 
-  doc.text("Discount", 330, sy);
-
-  doc.text(
-    `${invoice.shop.currency} ${Number(invoice.summary.discount).toFixed(2)}`,
-    420,
-    sy,
-    {
-      width: 115,
-      align: "right",
-    },
+  drawSummaryRow(
+    doc,
+    "Shipping",
+    formatMoney(currency, shippingCharge),
+    cardX + 15,
+    rowY,
+    110,
   );
 
-  sy += 26;
+  rowY += 22;
 
-  doc.moveTo(325, sy).lineTo(535, sy).strokeColor("#CBD5E1").stroke();
+  drawSummaryRow(
+    doc,
+    "VAT / Tax",
+    formatMoney(currency, tax),
+    cardX + 15,
+    rowY,
+    110,
+  );
 
-  sy += 12;
+  rowY += 24;
 
-  doc.font("Helvetica-Bold").fontSize(12).fillColor("#111827");
+  // ============================================================
+  // TOTAL DIVIDER
+  // ============================================================
 
-  doc.text("Grand Total", 330, sy);
+  doc
+    .moveTo(cardX + 15, rowY)
+    .lineTo(cardX + cardWidth - 15, rowY)
+    .strokeColor(COLORS.border)
+    .lineWidth(1)
+    .stroke();
 
-  doc.text(
-    `${invoice.shop.currency} ${Number(invoice.summary.grandTotal).toFixed(2)}`,
-    410,
-    sy,
-    {
+  rowY += 15;
+
+  // ============================================================
+  // GRAND TOTAL
+  // ============================================================
+
+  doc
+    .fillColor(COLORS.dark)
+    .font("Helvetica-Bold")
+    .fontSize(11)
+    .text("Grand Total", cardX + 15, rowY);
+
+  doc
+    .fillColor(COLORS.primary)
+    .font("Helvetica-Bold")
+    .fontSize(12)
+    .text(formatMoney(currency, grandTotal), cardX + 85, rowY, {
       width: 125,
       align: "right",
-    },
-  );
+    });
 
-  y += 205;
+  // ============================================================
+  // PAYMENT SUMMARY
+  // ============================================================
 
-  if (y > 700) {
+  let paymentY = y + cardHeight + 25;
+
+  if (paymentY > PAGE.bottom - 130) {
     doc.addPage();
-    y = 60;
+    paymentY = 60;
   }
 
   doc
-    .fillColor("#111827")
+    .fillColor(COLORS.dark)
     .font("Helvetica-Bold")
     .fontSize(14)
-    .text("Payment Summary", 50, y);
+    .text("Payment Summary", PAGE.left, paymentY);
 
-  y += 24;
+  paymentY += 25;
 
-  doc.font("Helvetica").fontSize(10).fillColor("#374151");
+  const paymentMethod =
+    payment.method || invoice?.paymentMethod || "cash_on_delivery";
 
-  doc.text(`Payment Method : ${String(invoice.payment.method).toUpperCase()}`);
+  const paymentStatus = payment.status || invoice?.paymentStatus || "pending";
 
-  doc.moveDown(0.5);
+  const shippingStatus = shipping.status || invoice?.status || "pending";
 
-  doc.text(`Payment Status : ${String(invoice.payment.status).toUpperCase()}`);
+  // ============================================================
+  // PAYMENT CARD
+  // ============================================================
 
-  doc.moveDown(0.5);
+  const paymentCardHeight = 90;
 
-  doc.text(
-    `Shipping Status : ${String(invoice.shipping.status).toUpperCase()}`,
-  );
+  doc
+    .roundedRect(PAGE.left, paymentY, PAGE.width, paymentCardHeight, 6)
+    .fill(COLORS.primaryLight);
 
-  doc.moveDown(0.5);
+  doc
+    .roundedRect(PAGE.left, paymentY, PAGE.width, paymentCardHeight, 6)
+    .lineWidth(1)
+    .strokeColor("#BFDBFE")
+    .stroke();
 
-  doc.text(`Currency : ${invoice.shop.currency}`);
+  // ============================================================
+  // PAYMENT DETAILS
+  // ============================================================
 
-  return y + 80;
+  const leftX = PAGE.left + 15;
+  const rightX = 315;
+
+  let leftY = paymentY + 17;
+  let rightY = paymentY + 17;
+
+  // LEFT
+
+  doc
+    .fillColor(COLORS.muted)
+    .font("Helvetica")
+    .fontSize(9)
+    .text("Payment Method", leftX, leftY);
+
+  doc
+    .fillColor(COLORS.text)
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .text(formatStatus(paymentMethod), leftX, leftY + 14, {
+      width: 210,
+    });
+
+  // RIGHT
+
+  doc
+    .fillColor(COLORS.muted)
+    .font("Helvetica")
+    .fontSize(9)
+    .text("Payment Status", rightX, rightY);
+
+  doc
+    .fillColor(
+      String(paymentStatus).toLowerCase() === "paid"
+        ? COLORS.success
+        : COLORS.text,
+    )
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .text(formatStatus(paymentStatus), rightX, rightY + 14);
+
+  // SECOND ROW
+
+  leftY += 42;
+  rightY += 42;
+
+  doc
+    .fillColor(COLORS.muted)
+    .font("Helvetica")
+    .fontSize(9)
+    .text("Order Status", leftX, leftY);
+
+  doc
+    .fillColor(COLORS.text)
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .text(formatStatus(shippingStatus), leftX, leftY + 14);
+
+  doc
+    .fillColor(COLORS.muted)
+    .font("Helvetica")
+    .fontSize(9)
+    .text("Currency", rightX, rightY);
+
+  doc
+    .fillColor(COLORS.text)
+    .font("Helvetica-Bold")
+    .fontSize(9)
+    .text(currency, rightX, rightY + 14);
+
+  // ============================================================
+  // RETURN NEXT Y
+  // ============================================================
+
+  return paymentY + paymentCardHeight + 25;
 };
 
 export default drawSummarySection;

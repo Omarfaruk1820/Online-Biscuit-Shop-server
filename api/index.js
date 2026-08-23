@@ -14,7 +14,7 @@ import usersRoutes from "../routes/users.routes.js";
 import productsRoutes from "../routes/products.routes.js";
 import cartsRoutes from "../routes/carts.routes.js";
 import ordersRoutes from "../routes/orders.routes.js";
-import invoiceRoutes from "../routes/invoice.routes.js";
+import invoicesRoutes from "../routes/invoices.routes.js";
 import adminRoutes from "../routes/admin.routes.js";
 
 // ============================================================
@@ -389,7 +389,7 @@ const mountRoutes = () => {
   // INVOICE
   // ==========================================================
 
-  app.use("/invoice", invoiceRoutes(ordersCollection, verifyToken));
+  app.use("/invoices", invoicesRoutes(ordersCollection, verifyToken));
 
   routesMounted = true;
 

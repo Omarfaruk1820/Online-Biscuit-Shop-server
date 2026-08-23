@@ -1,106 +1,201 @@
-
-
 import SHOP_INFO from "./shopInfo.js";
 
-import {
-  generateInvoiceNumber,
-  generateOrderNumber,
-  getGrandTotal,
-  getSubTotal,
-  getTotalItems,
-  getTotalQuantity,
-} from "./helpers.js";
+import { generateInvoiceNumber, generateOrderNumber } from "./helpers.js";
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+const toNumber = (value, fallback = 0) => {
+  const number = Number(value);
+
+  return Number.isFinite(number) ? number : fallback;
+};
+
+const toStringValue = (value, fallback = "") => {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  const stringValue = String(value).trim();
+
+  return stringValue || fallback;
+};
+
+const normalizePaymentMethod = (value) => {
+  return toStringValue(value, "cash_on_delivery");
+};
+
+const normalizeStatus = (value, fallback = "pending") => {
+  return toStringValue(value, fallback).toLowerCase();
+};
+
+// ============================================================
+// BUILD INVOICE
+// ============================================================
 
 const buildInvoice = (order) => {
-  const totalItems = getTotalItems(order.items);
+  if (!order) {
+    throw new Error("Order data is required.");
+  }
 
-  const totalQuantity = getTotalQuantity(order.items);
+  // ==========================================================
+  // ORDER ITEMS
+  // ==========================================================
 
-  const subtotal = getSubTotal(order.items);
+  const orderItems = Array.isArray(order.items) ? order.items : [];
 
-  const shippingCharge = SHOP_INFO.shippingCharge;
+  // ==========================================================
+  // ORDER TOTALS
+  // ==========================================================
 
-  const tax = SHOP_INFO.tax;
+  const totalItems = toNumber(order.totalItems, orderItems.length);
 
-  const discount = 0;
+  const totalQuantity = toNumber(
+    order.totalQuantity,
+    orderItems.reduce((total, item) => total + toNumber(item?.quantity), 0),
+  );
 
-  const grandTotal = getGrandTotal(subtotal, shippingCharge, tax, discount);
+  const subtotal = toNumber(
+    order.subtotal,
+    orderItems.reduce((total, item) => total + toNumber(item?.subtotal), 0),
+  );
+
+  const totalDiscount = toNumber(order.totalDiscount, 0);
+
+  const shippingCharge = toNumber(order.shipping, SHOP_INFO.shippingCharge);
+
+  const tax = toNumber(order.tax, SHOP_INFO.tax);
+
+  const grandTotal = toNumber(
+    order.grandTotal,
+    subtotal - totalDiscount + shippingCharge + tax,
+  );
+
+  // ==========================================================
+  // CUSTOMER
+  // ==========================================================
+
+  const customer = {
+    name: toStringValue(order.customer?.name, "Customer"),
+
+    email: toStringValue(order.customer?.email, order.email),
+
+    phone: toStringValue(order.customer?.phone, ""),
+
+    address: toStringValue(order.customer?.address, ""),
+
+    city: toStringValue(order.customer?.city, ""),
+
+    zip: toStringValue(order.customer?.zip, ""),
+  };
+
+  // ==========================================================
+  // PAYMENT
+  // ==========================================================
+
+  const payment = {
+    method: normalizePaymentMethod(order.paymentMethod),
+
+    status: normalizeStatus(order.paymentStatus, "pending"),
+  };
+
+  // ==========================================================
+  // SHIPPING
+  // ==========================================================
+
+  const shipping = {
+    status: normalizeStatus(order.status, "pending"),
+
+    shippingCharge,
+  };
+
+  // ==========================================================
+  // ITEMS
+  // ==========================================================
+
+  const items = orderItems.map((item) => {
+    const price = toNumber(item?.price);
+    const quantity = toNumber(item?.quantity);
+    const discount = toNumber(item?.discount);
+
+    const calculatedFinalPrice = price - (price * discount) / 100;
+
+    const finalPrice = toNumber(item?.finalPrice, calculatedFinalPrice);
+
+    const calculatedSubtotal = finalPrice * quantity;
+
+    const itemSubtotal = toNumber(item?.subtotal, calculatedSubtotal);
+
+    return {
+      productId: toStringValue(item?.productId, ""),
+
+      sku: toStringValue(item?.sku, ""),
+
+      image: toStringValue(item?.image, ""),
+
+      name: toStringValue(item?.name, "Unknown Product"),
+
+      quantity,
+
+      price,
+
+      unitPrice: price,
+
+      discount,
+
+      finalPrice,
+
+      subtotal: itemSubtotal,
+    };
+  });
+
+  // ==========================================================
+  // SUMMARY
+  // ==========================================================
+
+  const summary = {
+    totalItems,
+
+    totalQuantity,
+
+    subtotal,
+
+    shippingCharge,
+
+    tax,
+
+    discount: totalDiscount,
+
+    grandTotal,
+  };
+
+  // ==========================================================
+  // RETURN INVOICE
+  // ==========================================================
 
   return {
     invoiceNumber: generateInvoiceNumber(order),
 
-    orderNumber: generateOrderNumber(order),
+    orderNumber: toStringValue(order.orderNumber, generateOrderNumber(order)),
 
-    orderId: order._id.toString(),
+    orderId: order._id?.toString() || "",
 
-    orderDate: order.createdAt,
+    orderDate: order.createdAt || new Date(),
 
-    shop: SHOP_INFO,
-
-    customer: {
-      name: order.customer?.name || "Customer",
-
-      email: order.email,
-
-      phone: order.customer?.phone || "",
-
-      address: order.customer?.address || "",
-
-      city: order.customer?.city || "",
-
-      zip: order.customer?.zip || "",
+    shop: {
+      ...SHOP_INFO,
     },
 
-    payment: {
-      method: order.customer?.paymentMethod || "COD",
+    customer,
 
-      status: order.paymentStatus || "Unpaid",
-    },
+    payment,
 
-    shipping: {
-      status: order.status || "Pending",
+    shipping,
 
-      shippingCharge,
-    },
+    items,
 
-    items: (order.items || []).map((item) => ({
-      productId: item.productId,
-
-      sku: item.sku || "",
-
-      image: item.image || "",
-
-      name: item.name,
-
-      quantity: Number(item.quantity || 0),
-
-      price: Number(item.price || 0),
-
-      discount: Number(item.discount || 0),
-
-      finalPrice:
-        item.finalPrice ??
-        Number(item.price || 0) -
-          (Number(item.price || 0) * Number(item.discount || 0)) / 100,
-
-      subtotal: Number(item.subtotal || 0),
-    })),
-
-    summary: {
-      totalItems,
-
-      totalQuantity,
-
-      subtotal,
-
-      shippingCharge,
-
-      tax,
-
-      discount,
-
-      grandTotal,
-    },
+    summary,
   };
 };
 
