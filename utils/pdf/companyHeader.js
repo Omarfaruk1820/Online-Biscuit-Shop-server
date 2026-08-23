@@ -51,9 +51,9 @@ const drawCompanyHeader = (doc, invoice) => {
   const companyName = safeText(shop.name, "Your Store");
   const slogan = safeText(shop.slogan, "");
 
-  const address = safeText(shop.address);
-  const phone = safeText(shop.phone);
-  const email = safeText(shop.email);
+  const address = "Kumarkhali Rail Station Road";
+ const phone = "01959566274";
+  const email = "Mamun Biscuit shop";
   const website = safeText(shop.website);
 
   const invoiceNumber = safeText(invoice?.invoiceNumber, "INV-NOT-AVAILABLE");
@@ -101,7 +101,7 @@ const drawCompanyHeader = (doc, invoice) => {
 
   const companyLines = [
     `Address: ${address}`,
-    `Phone: ${phone}`,
+     `Phone: ${phone}`,
     `Email: ${email}`,
     `Website: ${website}`,
   ];
