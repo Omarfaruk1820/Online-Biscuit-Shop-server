@@ -6,10 +6,6 @@ import verifyToken from "../middleware/verifyToken.js";
 import verifyUser from "../middleware/verifyUser.js";
 import verifyAdmin from "../middleware/verifyAdmin.js";
 
-// ============================================================
-// USERS ROUTES
-// ============================================================
-
 const usersRoutes = (usersCollection) => {
   if (!usersCollection) {
     throw new Error("usersRoutes requires usersCollection.");
@@ -17,46 +13,29 @@ const usersRoutes = (usersCollection) => {
 
   const router = Router();
 
-  // ==========================================================
-  // HELPERS
-  // ==========================================================
-
-  const normalizeEmail = (email = "") => {
-    return typeof email === "string" ? email.trim().toLowerCase() : "";
-  };
+  const VALID_ROLES = ["user", "admin"];
+  const VALID_STATUSES = ["active", "blocked"];
 
   const normalizeString = (value = "") => {
     return typeof value === "string" ? value.trim() : "";
   };
 
-  const normalizeProvider = (provider = "password") => {
+  const normalizeEmail = (email = "") => {
+    return normalizeString(email).toLowerCase();
+  };
+
+  const normalizeRole = (role = "") => {
+    return normalizeString(role).toLowerCase();
+  };
+
+  const normalizeStatus = (status = "") => {
+    return normalizeString(status).toLowerCase();
+  };
+
+  const normalizeProvider = (provider = "") => {
     const value = normalizeString(provider).toLowerCase();
 
-    if (value === "google.com") {
-      return "google.com";
-    }
-
-    return "password";
-  };
-
-  const normalizeStatus = (status = "active") => {
-    const value = normalizeString(status).toLowerCase();
-
-    if (value === "blocked") {
-      return "blocked";
-    }
-
-    return "active";
-  };
-
-  const normalizeRole = (role = "user") => {
-    const value = normalizeString(role).toLowerCase();
-
-    if (value === "admin") {
-      return "admin";
-    }
-
-    return "user";
+    return value === "google.com" ? "google.com" : "password";
   };
 
   const isValidObjectId = (id) => {
@@ -66,10 +45,6 @@ const usersRoutes = (usersCollection) => {
   const escapeRegex = (value = "") => {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   };
-
-  // ==========================================================
-  // USER PROJECTION
-  // ==========================================================
 
   const userProjection = {
     _id: 1,
@@ -86,50 +61,37 @@ const usersRoutes = (usersCollection) => {
     lastLogin: 1,
   };
 
-  // ==========================================================
-  // SAFE USER
-  // ==========================================================
-
   const getSafeUser = (user) => {
     if (!user) {
       return null;
     }
 
+    const role = normalizeRole(user.role);
+    const status = normalizeStatus(user.status);
+
     return {
       _id: user._id || null,
-
       uid: normalizeString(user.uid),
-
       name: normalizeString(user.name),
-
       email: normalizeEmail(user.email),
-
       photo: normalizeString(user.photo),
-
       emailVerified: Boolean(user.emailVerified),
-
-      role: normalizeRole(user.role),
-
-      status: normalizeStatus(user.status),
-
+      role: VALID_ROLES.includes(role) ? role : "user",
+      status: VALID_STATUSES.includes(status) ? status : "active",
       provider: normalizeProvider(user.provider),
-
       createdAt: user.createdAt || null,
-
       updatedAt: user.updatedAt || null,
-
       lastLogin: user.lastLogin || null,
     };
   };
 
- 
+  // ============================================================
+  // CREATE / SYNC USER
+  // POST /users
+  // ============================================================
 
   router.post("/", verifyFirebaseToken, async (req, res) => {
     try {
-      // ========================================================
-      // FIREBASE USER
-      // ========================================================
-
       const firebaseUser = req.firebaseUser;
 
       if (!firebaseUser?.uid) {
@@ -140,7 +102,6 @@ const usersRoutes = (usersCollection) => {
       }
 
       const uid = normalizeString(firebaseUser.uid);
-
       const email = normalizeEmail(firebaseUser.email);
 
       if (!uid) {
@@ -157,89 +118,44 @@ const usersRoutes = (usersCollection) => {
         });
       }
 
-      // ========================================================
-      // CLIENT PROFILE DATA
-      // ========================================================
-      //
-      // AuthProvider sends:
-      //
-      // {
-      //   name,
-      //   photoURL
-      // }
-      //
-      // We also support `photo` for compatibility.
-      //
-      // ========================================================
-
       const body = req.body || {};
 
       const clientName = normalizeString(body.name);
 
       const clientPhoto = normalizeString(body.photoURL || body.photo);
 
-      // ========================================================
-      // FIREBASE PROFILE
-      // ========================================================
-
       const firebaseName = normalizeString(
-        firebaseUser.name || firebaseUser.displayName || "",
+        firebaseUser.name || firebaseUser.displayName,
       );
 
       const firebasePhoto = normalizeString(
-        firebaseUser.picture || firebaseUser.photoURL || "",
+        firebaseUser.picture || firebaseUser.photoURL,
       );
 
-      // ========================================================
-      // FINAL PROFILE DATA
-      // ========================================================
-
-      const name = clientName || firebaseName;
+      const name = (
+        clientName ||
+        firebaseName ||
+        email.split("@")[0] ||
+        "User"
+      ).slice(0, 100);
 
       const photo = clientPhoto || firebasePhoto;
-
-      // ========================================================
-      // EMAIL VERIFICATION
-      // ========================================================
 
       const emailVerified = Boolean(
         firebaseUser.email_verified ?? firebaseUser.emailVerified,
       );
-
-      // ========================================================
-      // PROVIDER
-      // ========================================================
 
       const firebaseProvider =
         firebaseUser.providerData?.[0]?.providerId || "password";
 
       const provider = normalizeProvider(firebaseProvider);
 
-      // ========================================================
-      // TIMESTAMP
-      // ========================================================
-
       const now = new Date();
 
-      // ========================================================
-      // FIND USER BY UID
-      // ========================================================
-
-      const userByUid = await usersCollection.findOne({
-        uid,
-      });
-
-      // ========================================================
-      // FIND USER BY EMAIL
-      // ========================================================
-
-      const userByEmail = await usersCollection.findOne({
-        email,
-      });
-
-      // ========================================================
-      // IDENTITY CONFLICT
-      // ========================================================
+      const [userByUid, userByEmail] = await Promise.all([
+        usersCollection.findOne({ uid }),
+        usersCollection.findOne({ email }),
+      ]);
 
       if (
         userByUid &&
@@ -253,17 +169,9 @@ const usersRoutes = (usersCollection) => {
         });
       }
 
-      // ========================================================
-      // EXISTING USER
-      // ========================================================
-
       const existingUser = userByUid || userByEmail;
 
       if (existingUser) {
-        // ------------------------------------------------------
-        // Existing account belongs to another Firebase UID
-        // ------------------------------------------------------
-
         if (existingUser.uid && normalizeString(existingUser.uid) !== uid) {
           return res.status(409).json({
             success: false,
@@ -272,68 +180,48 @@ const usersRoutes = (usersCollection) => {
           });
         }
 
-        // ------------------------------------------------------
-        // Account status
-        // ------------------------------------------------------
+        const existingStatus = normalizeStatus(existingUser.status);
 
-        const status = normalizeStatus(existingUser.status);
-
-        if (status === "blocked") {
+        if (existingStatus === "blocked") {
           return res.status(403).json({
             success: false,
             message: "Your account has been blocked.",
           });
         }
 
-        // ------------------------------------------------------
-        // Existing user update
-        // ------------------------------------------------------
+        const existingRole = VALID_ROLES.includes(
+          normalizeRole(existingUser.role),
+        )
+          ? normalizeRole(existingUser.role)
+          : "user";
 
         const updateData = {
           uid,
           email,
           emailVerified,
           provider,
+          role: existingRole,
+          status: "active",
           updatedAt: now,
           lastLogin: now,
         };
 
-        // ------------------------------------------------------
-        // Update name if available
-        // ------------------------------------------------------
-
         if (name) {
-          updateData.name = name.slice(0, 100);
+          updateData.name = name;
         }
-
-        // ------------------------------------------------------
-        // Update photo if available
-        // ------------------------------------------------------
 
         if (photo) {
           updateData.photo = photo;
         }
 
         await usersCollection.updateOne(
-          {
-            _id: existingUser._id,
-          },
-          {
-            $set: updateData,
-          },
+          { _id: existingUser._id },
+          { $set: updateData },
         );
 
-        // ------------------------------------------------------
-        // Get updated user
-        // ------------------------------------------------------
-
         const updatedUser = await usersCollection.findOne(
-          {
-            _id: existingUser._id,
-          },
-          {
-            projection: userProjection,
-          },
+          { _id: existingUser._id },
+          { projection: userProjection },
         );
 
         return res.status(200).json({
@@ -343,31 +231,17 @@ const usersRoutes = (usersCollection) => {
         });
       }
 
-      // ========================================================
-      // CREATE NEW USER
-      // ========================================================
-
       const newUser = {
         uid,
-
-        name: name.slice(0, 100),
-
+        name,
         email,
-
         photo,
-
         emailVerified,
-
         provider,
-
         role: "user",
-
         status: "active",
-
         createdAt: now,
-
         updatedAt: now,
-
         lastLogin: now,
       };
 
@@ -380,17 +254,9 @@ const usersRoutes = (usersCollection) => {
         });
       }
 
-      // ========================================================
-      // RETURN CREATED USER
-      // ========================================================
-
       const createdUser = await usersCollection.findOne(
-        {
-          _id: result.insertedId,
-        },
-        {
-          projection: userProjection,
-        },
+        { _id: result.insertedId },
+        { projection: userProjection },
       );
 
       return res.status(201).json({
@@ -399,10 +265,6 @@ const usersRoutes = (usersCollection) => {
         user: getSafeUser(createdUser),
       });
     } catch (error) {
-      // ========================================================
-      // DUPLICATE KEY
-      // ========================================================
-
       if (error?.code === 11000) {
         return res.status(409).json({
           success: false,
@@ -411,14 +273,7 @@ const usersRoutes = (usersCollection) => {
         });
       }
 
-      // ========================================================
-      // SERVER ERROR
-      // ========================================================
-
-      console.error(
-        "POST /users ERROR:",
-        error?.stack || error?.message || error,
-      );
+      console.error("POST /users ERROR:", error);
 
       return res.status(500).json({
         success: false,
@@ -427,10 +282,11 @@ const usersRoutes = (usersCollection) => {
     }
   });
 
-  // ==========================================================
+  // ============================================================
+  // GET ALL USERS
   // GET /users
   // ADMIN ONLY
-  // ==========================================================
+  // ============================================================
 
   router.get(
     "/",
@@ -440,11 +296,9 @@ const usersRoutes = (usersCollection) => {
     async (req, res) => {
       try {
         let page = Number.parseInt(req.query.page, 10);
-
         let limit = Number.parseInt(req.query.limit, 10);
 
         page = Number.isFinite(page) && page > 0 ? page : 1;
-
         limit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 50) : 10;
 
         const skip = (page - 1) * limit;
@@ -453,13 +307,11 @@ const usersRoutes = (usersCollection) => {
           typeof req.query.search === "string" ? req.query.search.trim() : "";
 
         const sort =
-          typeof req.query.sort === "string" ? req.query.sort.trim() : "newest";
+          typeof req.query.sort === "string"
+            ? req.query.sort.trim().toLowerCase()
+            : "newest";
 
         const query = {};
-
-        // ======================================================
-        // SEARCH
-        // ======================================================
 
         if (search) {
           const safeSearch = escapeRegex(search);
@@ -480,41 +332,16 @@ const usersRoutes = (usersCollection) => {
           ];
         }
 
-        // ======================================================
-        // SORT
-        // ======================================================
-
         const sortMap = {
-          newest: {
-            createdAt: -1,
-          },
-
-          oldest: {
-            createdAt: 1,
-          },
-
-          name: {
-            name: 1,
-          },
-
-          email: {
-            email: 1,
-          },
-
-          role: {
-            role: 1,
-          },
-
-          status: {
-            status: 1,
-          },
+          newest: { createdAt: -1 },
+          oldest: { createdAt: 1 },
+          name: { name: 1 },
+          email: { email: 1 },
+          role: { role: 1 },
+          status: { status: 1 },
         };
 
         const sortOption = sortMap[sort] || sortMap.newest;
-
-        // ======================================================
-        // QUERY
-        // ======================================================
 
         const [users, total] = await Promise.all([
           usersCollection
@@ -528,29 +355,22 @@ const usersRoutes = (usersCollection) => {
           usersCollection.countDocuments(query),
         ]);
 
-        const totalPages = Math.ceil(total / limit);
+        const totalPages = total > 0 ? Math.ceil(total / limit) : 0;
 
         return res.status(200).json({
           success: true,
-
           data: users.map(getSafeUser),
-
           pagination: {
             page,
             limit,
             total,
             totalPages,
-
             hasNextPage: page < totalPages,
-
             hasPrevPage: page > 1,
           },
         });
       } catch (error) {
-        console.error(
-          "GET /users ERROR:",
-          error?.stack || error?.message || error,
-        );
+        console.error("GET /users ERROR:", error);
 
         return res.status(500).json({
           success: false,
@@ -560,9 +380,10 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ==========================================================
+  // ============================================================
+  // GET USER BY EMAIL
   // GET /users/:email
-  // ==========================================================
+  // ============================================================
 
   router.get(
     "/:email",
@@ -580,12 +401,7 @@ const usersRoutes = (usersCollection) => {
         }
 
         const currentEmail = normalizeEmail(req.dbUser?.email);
-
         const currentRole = normalizeRole(req.dbUser?.role);
-
-        // ======================================================
-        // ACCESS CONTROL
-        // ======================================================
 
         if (currentRole !== "admin" && requestedEmail !== currentEmail) {
           return res.status(403).json({
@@ -594,17 +410,9 @@ const usersRoutes = (usersCollection) => {
           });
         }
 
-        // ======================================================
-        // FIND USER
-        // ======================================================
-
         const user = await usersCollection.findOne(
-          {
-            email: requestedEmail,
-          },
-          {
-            projection: userProjection,
-          },
+          { email: requestedEmail },
+          { projection: userProjection },
         );
 
         if (!user) {
@@ -619,10 +427,7 @@ const usersRoutes = (usersCollection) => {
           user: getSafeUser(user),
         });
       } catch (error) {
-        console.error(
-          "GET /users/:email ERROR:",
-          error?.stack || error?.message || error,
-        );
+        console.error("GET /users/:email ERROR:", error);
 
         return res.status(500).json({
           success: false,
@@ -632,10 +437,11 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ==========================================================
+  // ============================================================
+  // CHANGE USER ROLE
   // PATCH /users/:id/role
   // ADMIN ONLY
-  // ==========================================================
+  // ============================================================
 
   router.patch(
     "/:id/role",
@@ -645,8 +451,7 @@ const usersRoutes = (usersCollection) => {
     async (req, res) => {
       try {
         const { id } = req.params;
-
-        const { role } = req.body || {};
+        const role = normalizeRole(req.body?.role);
 
         if (!isValidObjectId(id)) {
           return res.status(400).json({
@@ -655,10 +460,10 @@ const usersRoutes = (usersCollection) => {
           });
         }
 
-        if (!["user", "admin"].includes(role)) {
+        if (!VALID_ROLES.includes(role)) {
           return res.status(400).json({
             success: false,
-            message: "Invalid role.",
+            message: "Invalid role. Use user or admin.",
           });
         }
 
@@ -676,8 +481,9 @@ const usersRoutes = (usersCollection) => {
         }
 
         const currentEmail = normalizeEmail(req.dbUser?.email);
+        const targetEmail = normalizeEmail(targetUser.email);
 
-        if (currentEmail && normalizeEmail(targetUser.email) === currentEmail) {
+        if (currentEmail && currentEmail === targetEmail) {
           return res.status(403).json({
             success: false,
             message: "You cannot change your own role.",
@@ -685,9 +491,7 @@ const usersRoutes = (usersCollection) => {
         }
 
         const result = await usersCollection.updateOne(
-          {
-            _id: targetId,
-          },
+          { _id: targetId },
           {
             $set: {
               role,
@@ -696,16 +500,19 @@ const usersRoutes = (usersCollection) => {
           },
         );
 
+        const updatedUser = await usersCollection.findOne(
+          { _id: targetId },
+          { projection: userProjection },
+        );
+
         return res.status(200).json({
           success: true,
+          message: `User role changed to ${role}.`,
           modifiedCount: result.modifiedCount,
-          message: "User role updated successfully.",
+          user: getSafeUser(updatedUser),
         });
       } catch (error) {
-        console.error(
-          "PATCH /users/:id/role ERROR:",
-          error?.stack || error?.message || error,
-        );
+        console.error("PATCH /users/:id/role ERROR:", error);
 
         return res.status(500).json({
           success: false,
@@ -715,10 +522,11 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ==========================================================
+  // ============================================================
+  // CHANGE USER STATUS
   // PATCH /users/:id/status
   // ADMIN ONLY
-  // ==========================================================
+  // ============================================================
 
   router.patch(
     "/:id/status",
@@ -728,8 +536,7 @@ const usersRoutes = (usersCollection) => {
     async (req, res) => {
       try {
         const { id } = req.params;
-
-        const { status } = req.body || {};
+        const status = normalizeStatus(req.body?.status);
 
         if (!isValidObjectId(id)) {
           return res.status(400).json({
@@ -738,10 +545,10 @@ const usersRoutes = (usersCollection) => {
           });
         }
 
-        if (!["active", "blocked"].includes(status)) {
+        if (!VALID_STATUSES.includes(status)) {
           return res.status(400).json({
             success: false,
-            message: "Invalid status.",
+            message: "Invalid status. Use active or blocked.",
           });
         }
 
@@ -759,8 +566,9 @@ const usersRoutes = (usersCollection) => {
         }
 
         const currentEmail = normalizeEmail(req.dbUser?.email);
+        const targetEmail = normalizeEmail(targetUser.email);
 
-        if (currentEmail && normalizeEmail(targetUser.email) === currentEmail) {
+        if (currentEmail && currentEmail === targetEmail) {
           return res.status(403).json({
             success: false,
             message: "You cannot change your own status.",
@@ -768,9 +576,7 @@ const usersRoutes = (usersCollection) => {
         }
 
         const result = await usersCollection.updateOne(
-          {
-            _id: targetId,
-          },
+          { _id: targetId },
           {
             $set: {
               status,
@@ -779,16 +585,19 @@ const usersRoutes = (usersCollection) => {
           },
         );
 
+        const updatedUser = await usersCollection.findOne(
+          { _id: targetId },
+          { projection: userProjection },
+        );
+
         return res.status(200).json({
           success: true,
+          message: `User status changed to ${status}.`,
           modifiedCount: result.modifiedCount,
-          message: `User ${status} successfully.`,
+          user: getSafeUser(updatedUser),
         });
       } catch (error) {
-        console.error(
-          "PATCH /users/:id/status ERROR:",
-          error?.stack || error?.message || error,
-        );
+        console.error("PATCH /users/:id/status ERROR:", error);
 
         return res.status(500).json({
           success: false,
@@ -798,10 +607,11 @@ const usersRoutes = (usersCollection) => {
     },
   );
 
-  // ==========================================================
+  // ============================================================
+  // DELETE USER
   // DELETE /users/:id
   // ADMIN ONLY
-  // ==========================================================
+  // ============================================================
 
   router.delete(
     "/:id",
@@ -833,8 +643,9 @@ const usersRoutes = (usersCollection) => {
         }
 
         const currentEmail = normalizeEmail(req.dbUser?.email);
+        const targetEmail = normalizeEmail(targetUser.email);
 
-        if (currentEmail && normalizeEmail(targetUser.email) === currentEmail) {
+        if (currentEmail && currentEmail === targetEmail) {
           return res.status(403).json({
             success: false,
             message: "You cannot delete your own account.",
@@ -858,10 +669,7 @@ const usersRoutes = (usersCollection) => {
           message: "User deleted successfully.",
         });
       } catch (error) {
-        console.error(
-          "DELETE /users/:id ERROR:",
-          error?.stack || error?.message || error,
-        );
+        console.error("DELETE /users/:id ERROR:", error);
 
         return res.status(500).json({
           success: false,

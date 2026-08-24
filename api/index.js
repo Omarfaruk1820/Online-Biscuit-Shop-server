@@ -374,6 +374,17 @@ const mountRoutes = () => {
   // ADMIN
   // ==========================================================
 
+  // app.use(
+  //   "/admin",
+  //   adminRoutes(
+  //     ordersCollection,
+  //     usersCollection,
+  //     productsCollection,
+  //     verifyToken,
+  //     verifyAdmin,
+  //   ),
+  // );
+
   app.use(
     "/admin",
     adminRoutes(

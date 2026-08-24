@@ -14,13 +14,6 @@ const ordersRoutes = (
   productsCollection,
   usersCollection,
 ) => {
-  console.log("ORDERS ROUTES INITIALIZED:", {
-    ordersCollection: typeof ordersCollection,
-    cartsCollection: typeof cartsCollection,
-    productsCollection: typeof productsCollection,
-    usersCollection: typeof usersCollection,
-  });
-
   const router = Router();
 
   // ============================================================
@@ -36,9 +29,9 @@ const ordersRoutes = (
     "cancelled",
   ];
 
-  const ALLOWED_STATUSES = ["all", ...ORDER_STATUSES];
+  const PAYMENT_STATUSES = ["pending", "paid", "failed", "refunded", "unpaid"];
 
-  const ALLOWED_SORTS = ["newest", "oldest", "highest", "lowest"];
+  const ALLOWED_STATUSES = ["all", ...ORDER_STATUSES];
 
   const SORT_OPTIONS = {
     newest: { createdAt: -1 },
@@ -46,6 +39,26 @@ const ordersRoutes = (
     highest: { grandTotal: -1 },
     lowest: { grandTotal: 1 },
   };
+
+  const STATUS_TRANSITIONS = {
+    pending: ["confirmed", "cancelled"],
+    confirmed: ["processing", "cancelled"],
+    processing: ["shipped", "cancelled"],
+    shipped: ["delivered"],
+    delivered: [],
+    cancelled: [],
+  };
+
+  const STATUS_NOTES = {
+    pending: "Order placed successfully.",
+    confirmed: "Order has been confirmed.",
+    processing: "Order is being prepared.",
+    shipped: "Order has been shipped.",
+    delivered: "Order has been delivered.",
+    cancelled: "Order has been cancelled.",
+  };
+
+  const CUSTOMER_CANCELLABLE_STATUSES = ["pending", "confirmed", "processing"];
 
   const MAX_PAGE_LIMIT = 100;
   const MAX_CART_QUANTITY = 99;
@@ -66,10 +79,6 @@ const ordersRoutes = (
   // HELPERS
   // ============================================================
 
-  const normalizeEmail = (email = "") => {
-    return typeof email === "string" ? email.trim().toLowerCase() : "";
-  };
-
   const normalizeString = (value = "", maxLength = 200) => {
     if (typeof value !== "string") {
       return "";
@@ -78,14 +87,18 @@ const ordersRoutes = (
     return value.trim().slice(0, maxLength);
   };
 
+  const normalizeEmail = (email = "") => {
+    return normalizeString(email, 200).toLowerCase();
+  };
+
   const round = (value) => {
     const number = Number(value);
 
-    return Number.isFinite(number) ? Number(number.toFixed(2)) : 0;
-  };
+    if (!Number.isFinite(number)) {
+      return 0;
+    }
 
-  const isValidObjectId = (id) => {
-    return typeof id === "string" && ObjectId.isValid(id);
+    return Number(number.toFixed(2));
   };
 
   const toObjectId = (value) => {
@@ -93,16 +106,52 @@ const ordersRoutes = (
       return value;
     }
 
-    if (!ObjectId.isValid(String(value))) {
+    if (!value) {
       return null;
     }
 
-    return new ObjectId(String(value));
+    const stringValue = String(value);
+
+    if (!ObjectId.isValid(stringValue)) {
+      return null;
+    }
+
+    return new ObjectId(stringValue);
   };
+
+  const isValidObjectId = (value) => {
+    return Boolean(toObjectId(value));
+  };
+
+  const createRouteError = (message, statusCode = 500) => {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+
+    return error;
+  };
+
+  const getErrorStatusCode = (error) => {
+    if (
+      Number.isInteger(error?.statusCode) &&
+      error.statusCode >= 400 &&
+      error.statusCode <= 599
+    ) {
+      return error.statusCode;
+    }
+
+    if (error?.code === 11000) {
+      return 409;
+    }
+
+    return 500;
+  };
+
+  // ============================================================
+  // PAGINATION
+  // ============================================================
 
   const getPagination = (query = {}) => {
     let page = Number.parseInt(query.page, 10);
-
     let limit = Number.parseInt(query.limit, 10);
 
     if (!Number.isInteger(page) || page < 1) {
@@ -122,6 +171,10 @@ const ordersRoutes = (
     };
   };
 
+  // ============================================================
+  // FILTERS
+  // ============================================================
+
   const getStatus = (value) => {
     const status =
       typeof value === "string" ? value.trim().toLowerCase() : "all";
@@ -133,8 +186,35 @@ const ordersRoutes = (
     const sort =
       typeof value === "string" ? value.trim().toLowerCase() : "newest";
 
-    return ALLOWED_SORTS.includes(sort) ? sort : "newest";
+    return Object.prototype.hasOwnProperty.call(SORT_OPTIONS, sort)
+      ? sort
+      : "newest";
   };
+
+  const getPaymentStatus = (value) => {
+    const status = typeof value === "string" ? value.trim().toLowerCase() : "";
+
+    return PAYMENT_STATUSES.includes(status) ? status : "";
+  };
+
+  // Support both frontend "cod" and database "cash_on_delivery".
+  const getPaymentMethod = (value) => {
+    const method = typeof value === "string" ? value.trim().toLowerCase() : "";
+
+    if (method === "cod") {
+      return "cash_on_delivery";
+    }
+
+    if (method === "cash_on_delivery") {
+      return "cash_on_delivery";
+    }
+
+    return "";
+  };
+
+  // ============================================================
+  // ORDER NUMBER
+  // ============================================================
 
   const createOrderNumber = () => {
     const timestamp = Date.now().toString(36).toUpperCase();
@@ -148,36 +228,33 @@ const ordersRoutes = (
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const orderNumber = createOrderNumber();
 
-      const existing = await ordersCollection.findOne(
+      const existingOrder = await ordersCollection.findOne(
         { orderNumber },
         {
-          projection: {
-            _id: 1,
-          },
+          projection: { _id: 1 },
           session,
         },
       );
 
-      if (!existing) {
+      if (!existingOrder) {
         return orderNumber;
       }
     }
 
-    throw new Error("Failed to generate unique order number.");
+    throw createRouteError("Failed to generate a unique order number.", 500);
   };
+
+  // ============================================================
+  // CUSTOMER
+  // ============================================================
 
   const normalizeCustomer = (customer = {}) => {
     return {
       name: normalizeString(customer.name, 100),
-
       phone: normalizeString(customer.phone, 30),
-
       address: normalizeString(customer.address, 500),
-
       city: normalizeString(customer.city, 100),
-
       area: normalizeString(customer.area, 100),
-
       note: normalizeString(customer.note, 300),
     };
   };
@@ -222,35 +299,12 @@ const ordersRoutes = (
     return null;
   };
 
-  const normalizePaymentMethod = (value) => {
-    const paymentMethod =
-      typeof value === "string" ? value.trim().toLowerCase() : "";
-
-    return paymentMethod === "cash_on_delivery" ? paymentMethod : "";
-  };
+  // ============================================================
+  // PRODUCT
+  // ============================================================
 
   const getProductName = (product) => {
-    return typeof product?.name === "string" && product.name.trim()
-      ? product.name.trim()
-      : "Unknown Product";
-  };
-
-  const getProductSku = (product) => {
-    return typeof product?.sku === "string" ? product.sku.trim() : "";
-  };
-
-  const getProductImage = (product) => {
-    return typeof product?.image === "string" ? product.image.trim() : "";
-  };
-
-  const getProductBrand = (product) => {
-    return typeof product?.brand === "string" ? product.brand.trim() : "";
-  };
-
-  const getProductCategory = (product) => {
-    return typeof product?.category === "string"
-      ? product.category.trim().toLowerCase()
-      : "";
+    return product?.name?.trim() || "Unknown Product";
   };
 
   const calculateProductPricing = (product) => {
@@ -259,13 +313,13 @@ const ordersRoutes = (
     const price = Number(product?.price);
 
     if (!Number.isFinite(price) || price < 0) {
-      throw new Error(`Invalid price for "${productName}".`);
+      throw createRouteError(`Invalid price for "${productName}".`, 400);
     }
 
     const discount = Number(product?.discount ?? 0);
 
     if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
-      throw new Error(`Invalid discount for "${productName}".`);
+      throw createRouteError(`Invalid discount for "${productName}".`, 400);
     }
 
     const safePrice = round(price);
@@ -282,21 +336,27 @@ const ordersRoutes = (
 
   const validateProductStock = (product, quantity) => {
     const productName = getProductName(product);
-
     const stock = Number(product?.stock);
 
     if (!Number.isInteger(stock) || stock < 0) {
-      throw new Error(`Invalid stock for "${productName}".`);
+      throw createRouteError(`Invalid stock for "${productName}".`, 400);
     }
 
     if (stock === 0) {
-      throw new Error(`"${productName}" is out of stock.`);
+      throw createRouteError(`"${productName}" is out of stock.`, 400);
     }
 
     if (quantity > stock) {
-      throw new Error(`Only ${stock} item(s) available for "${productName}".`);
+      throw createRouteError(
+        `Only ${stock} item(s) available for "${productName}".`,
+        409,
+      );
     }
   };
+
+  // ============================================================
+  // ORDER ITEMS
+  // ============================================================
 
   const normalizeOrderItems = (items = []) => {
     if (!Array.isArray(items)) {
@@ -305,50 +365,24 @@ const ordersRoutes = (
 
     return items.map((item) => ({
       productId: item.productId,
-
       sku: normalizeString(item.sku, 100),
-
       name: normalizeString(item.name, 200),
-
       image: normalizeString(item.image, 1000),
-
       brand: normalizeString(item.brand, 100),
-
       category: normalizeString(item.category, 100),
-
       weight: item.weight ?? null,
-
       quantity: Number(item.quantity) || 0,
-
       price: round(item.price),
-
       discount: round(item.discount),
-
       finalPrice: round(item.finalPrice),
-
       subtotal: round(item.subtotal),
-
       discountAmount: round(item.discountAmount),
     }));
   };
 
-  const createOrderSummary = (order) => {
-    return {
-      totalItems: Number(order?.totalItems) || 0,
-
-      totalQuantity: Number(order?.totalQuantity) || 0,
-
-      subtotal: round(order?.subtotal),
-
-      totalDiscount: round(order?.totalDiscount ?? order?.discount),
-
-      shipping: round(order?.shipping),
-
-      tax: round(order?.tax),
-
-      grandTotal: round(order?.grandTotal ?? order?.total),
-    };
-  };
+  // ============================================================
+  // SEARCH
+  // ============================================================
 
   const createSearchQuery = (search) => {
     if (!search) {
@@ -365,29 +399,40 @@ const ordersRoutes = (
             $options: "i",
           },
         },
-
-        {
-          "customer.name": {
-            $regex: escaped,
-            $options: "i",
-          },
-        },
-
-        {
-          "customer.phone": {
-            $regex: escaped,
-            $options: "i",
-          },
-        },
-
         {
           orderNumber: {
             $regex: escaped,
             $options: "i",
           },
         },
+        {
+          "customer.name": {
+            $regex: escaped,
+            $options: "i",
+          },
+        },
+        {
+          "customer.phone": {
+            $regex: escaped,
+            $options: "i",
+          },
+        },
       ],
     };
+  };
+
+  // ============================================================
+  // STATUS
+  // ============================================================
+
+  const getTransitionError = (currentStatus, nextStatus) => {
+    const allowedStatuses = STATUS_TRANSITIONS[currentStatus] || [];
+
+    if (!allowedStatuses.includes(nextStatus)) {
+      return `Order cannot move from "${currentStatus}" to "${nextStatus}".`;
+    }
+
+    return null;
   };
 
   // ============================================================
@@ -419,7 +464,7 @@ const ordersRoutes = (
         });
       }
 
-      const paymentMethod = normalizePaymentMethod(req.body?.paymentMethod);
+      const paymentMethod = getPaymentMethod(req.body?.paymentMethod);
 
       if (!paymentMethod) {
         return res.status(400).json({
@@ -431,16 +476,15 @@ const ordersRoutes = (
       let createdOrder = null;
 
       await session.withTransaction(async () => {
-        // ==================================================
+        // ------------------------------------------------------
         // LOAD CART
-        // ==================================================
+        // ------------------------------------------------------
 
         const cartItems = await cartsCollection
           .find(
             { email },
             {
               projection: {
-                _id: 1,
                 productId: 1,
                 quantity: 1,
                 createdAt: 1,
@@ -448,28 +492,20 @@ const ordersRoutes = (
               session,
             },
           )
-          .sort({
-            createdAt: 1,
-          })
+          .sort({ createdAt: 1 })
           .toArray();
 
-        if (cartItems.length === 0) {
-          const error = new Error("Your cart is empty.");
-
-          error.statusCode = 400;
-          throw error;
+        if (!cartItems.length) {
+          throw createRouteError("Your cart is empty.", 400);
         }
 
         if (cartItems.length > MAX_CART_QUANTITY) {
-          const error = new Error("Cart contains too many products.");
-
-          error.statusCode = 400;
-          throw error;
+          throw createRouteError("Cart contains too many products.", 400);
         }
 
-        // ==================================================
-        // PREPARE PRODUCT IDS
-        // ==================================================
+        // ------------------------------------------------------
+        // CART DATA
+        // ------------------------------------------------------
 
         const productIds = [];
         const cartMap = new Map();
@@ -478,21 +514,16 @@ const ordersRoutes = (
           const productId = toObjectId(cartItem.productId);
 
           if (!productId) {
-            const error = new Error(
+            throw createRouteError(
               "A cart item contains an invalid product ID.",
+              400,
             );
-
-            error.statusCode = 400;
-            throw error;
           }
 
           const key = productId.toString();
 
           if (cartMap.has(key)) {
-            const error = new Error("Duplicate product found in cart.");
-
-            error.statusCode = 400;
-            throw error;
+            throw createRouteError("Duplicate product found in cart.", 400);
           }
 
           const quantity = Number(cartItem.quantity);
@@ -502,10 +533,7 @@ const ordersRoutes = (
             quantity < 1 ||
             quantity > MAX_CART_QUANTITY
           ) {
-            const error = new Error("Invalid cart quantity.");
-
-            error.statusCode = 400;
-            throw error;
+            throw createRouteError("Invalid cart quantity.", 400);
           }
 
           cartMap.set(key, {
@@ -516,9 +544,9 @@ const ordersRoutes = (
           productIds.push(productId);
         }
 
-        // ==================================================
-        // LOAD CURRENT PRODUCTS
-        // ==================================================
+        // ------------------------------------------------------
+        // LOAD PRODUCTS
+        // ------------------------------------------------------
 
         const products = await productsCollection
           .find(
@@ -538,9 +566,9 @@ const ordersRoutes = (
           products.map((product) => [product._id.toString(), product]),
         );
 
-        // ==================================================
+        // ------------------------------------------------------
         // BUILD ORDER ITEMS
-        // ==================================================
+        // ------------------------------------------------------
 
         const orderItems = [];
 
@@ -548,16 +576,13 @@ const ordersRoutes = (
           const key = productId.toString();
 
           const cartItem = cartMap.get(key);
-
           const product = productMap.get(key);
 
           if (!product) {
-            const error = new Error(
+            throw createRouteError(
               "One or more products in your cart no longer exist.",
+              400,
             );
-
-            error.statusCode = 400;
-            throw error;
           }
 
           validateProductStock(product, cartItem.quantity);
@@ -572,36 +597,24 @@ const ordersRoutes = (
 
           orderItems.push({
             productId: product._id,
-
-            sku: getProductSku(product),
-
+            sku: normalizeString(product.sku, 100),
             name: getProductName(product),
-
-            image: getProductImage(product),
-
-            brand: getProductBrand(product),
-
-            category: getProductCategory(product),
-
+            image: normalizeString(product.image, 1000),
+            brand: normalizeString(product.brand, 100),
+            category: normalizeString(product.category, 100),
             weight: product.weight ?? null,
-
             quantity: cartItem.quantity,
-
             price: pricing.price,
-
             discount: pricing.discount,
-
             finalPrice: pricing.finalPrice,
-
             subtotal,
-
             discountAmount,
           });
         }
 
-        // ==================================================
-        // CALCULATE SUMMARY
-        // ==================================================
+        // ------------------------------------------------------
+        // SUMMARY
+        // ------------------------------------------------------
 
         const calculatedSummary = calculateOrderSummary(orderItems);
 
@@ -621,15 +634,15 @@ const ordersRoutes = (
           grandTotal: round(calculatedSummary.grandTotal),
         };
 
-        // ==================================================
+        // ------------------------------------------------------
         // ORDER NUMBER
-        // ==================================================
+        // ------------------------------------------------------
 
         const orderNumber = await createUniqueOrderNumber(session);
 
-        // ==================================================
-        // DECREASE PRODUCT STOCK
-        // ==================================================
+        // ------------------------------------------------------
+        // DECREASE STOCK
+        // ------------------------------------------------------
 
         for (const item of orderItems) {
           const result = await productsCollection.updateOne(
@@ -643,7 +656,6 @@ const ordersRoutes = (
               $inc: {
                 stock: -item.quantity,
               },
-
               $set: {
                 updatedAt: new Date(),
               },
@@ -654,160 +666,91 @@ const ordersRoutes = (
           );
 
           if (!result.acknowledged || result.modifiedCount !== 1) {
-            const error = new Error(
+            throw createRouteError(
               `"${item.name}" is no longer available in the requested quantity.`,
+              409,
             );
-
-            error.statusCode = 409;
-            throw error;
           }
         }
 
-        // ==================================================
+        // ------------------------------------------------------
         // CREATE ORDER
-        // ==================================================
+        // ------------------------------------------------------
 
         const now = new Date();
 
         const orderDocument = {
           orderNumber,
-
           email,
-
           customer,
-
           items: normalizeOrderItems(orderItems),
 
           totalItems: summary.totalItems,
-
           totalQuantity: summary.totalQuantity,
-
           subtotal: summary.subtotal,
-
           totalDiscount: summary.totalDiscount,
-
           shipping: summary.shipping,
-
           tax: summary.tax,
-
           grandTotal: summary.grandTotal,
 
           paymentMethod,
-
           paymentStatus: "pending",
-
           status: "pending",
 
           timeline: [
             {
               status: "pending",
-
-              note: "Order placed successfully.",
-
+              note: STATUS_NOTES.pending,
               createdAt: now,
             },
           ],
 
           createdAt: now,
-
           updatedAt: now,
         };
 
-        const result = await ordersCollection.insertOne(orderDocument, {
+        const insertResult = await ordersCollection.insertOne(orderDocument, {
           session,
         });
 
-        if (!result.acknowledged || !result.insertedId) {
-          const error = new Error("Failed to create order.");
-
-          error.statusCode = 500;
-          throw error;
+        if (!insertResult.acknowledged || !insertResult.insertedId) {
+          throw createRouteError("Failed to create order.", 500);
         }
 
-        // ==================================================
+        // ------------------------------------------------------
         // CLEAR CART
-        // ==================================================
+        // ------------------------------------------------------
 
         const deleteResult = await cartsCollection.deleteMany(
           { email },
-          {
-            session,
-          },
+          { session },
         );
 
         if (!deleteResult.acknowledged) {
-          const error = new Error("Failed to clear cart.");
-
-          error.statusCode = 500;
-          throw error;
+          throw createRouteError("Failed to clear cart.", 500);
         }
 
         createdOrder = {
-          _id: result.insertedId,
-
+          _id: insertResult.insertedId,
           ...orderDocument,
         };
       });
 
-      // ======================================================
-      // SUCCESS
-      // ======================================================
-
       return res.status(201).json({
         success: true,
-
         message: "Order placed successfully.",
-
-        data: {
-          _id: createdOrder._id,
-
-          orderNumber: createdOrder.orderNumber,
-
-          status: createdOrder.status,
-
-          paymentMethod: createdOrder.paymentMethod,
-
-          paymentStatus: createdOrder.paymentStatus,
-
-          customer: createdOrder.customer,
-
-          items: createdOrder.items,
-
-          totalItems: createdOrder.totalItems,
-
-          totalQuantity: createdOrder.totalQuantity,
-
-          subtotal: createdOrder.subtotal,
-
-          totalDiscount: createdOrder.totalDiscount,
-
-          shipping: createdOrder.shipping,
-
-          tax: createdOrder.tax,
-
-          grandTotal: createdOrder.grandTotal,
-
-          createdAt: createdOrder.createdAt,
-        },
+        data: createdOrder,
       });
     } catch (error) {
       console.error("POST /orders ERROR:", error?.stack || error);
 
-      const statusCode =
-        Number.isInteger(error?.statusCode) &&
-        error.statusCode >= 400 &&
-        error.statusCode < 600
-          ? error.statusCode
-          : error?.code === 11000
-            ? 409
-            : 500;
+      const statusCode = getErrorStatusCode(error);
 
       return res.status(statusCode).json({
         success: false,
-
         message:
           error?.code === 11000
-            ? "Order could not be created because of a duplicate order number."
+            ? "Duplicate order number."
             : error?.message || "Failed to place order.",
       });
     } finally {
@@ -816,11 +759,16 @@ const ordersRoutes = (
   });
 
   // ============================================================
-  // ADMIN: GET ALL ORDERS
+  // ADMIN - GET ALL ORDERS
   // GET /orders
   // ============================================================
 
-  router.get("/", verifyToken, verifyAdmin, async (req, res) => {
+router.get(
+  "/",
+  verifyToken,
+  verifyUser(usersCollection),
+  verifyAdmin,
+  async (req, res) => {
     try {
       const { page, limit, skip } = getPagination(req.query);
 
@@ -830,8 +778,8 @@ const ordersRoutes = (
           : "";
 
       const status = getStatus(req.query.status);
-
       const sort = getSort(req.query.sort);
+      const paymentStatus = getPaymentStatus(req.query.paymentStatus);
 
       const query = {};
 
@@ -839,7 +787,15 @@ const ordersRoutes = (
         query.status = status;
       }
 
-      Object.assign(query, createSearchQuery(search));
+      if (paymentStatus) {
+        query.paymentStatus = paymentStatus;
+      }
+
+      const searchQuery = createSearchQuery(search);
+
+      if (Object.keys(searchQuery).length > 0) {
+        Object.assign(query, searchQuery);
+      }
 
       const projection = {
         items: 0,
@@ -848,9 +804,7 @@ const ordersRoutes = (
 
       const [orders, totalOrders] = await Promise.all([
         ordersCollection
-          .find(query, {
-            projection,
-          })
+          .find(query, { projection })
           .sort(SORT_OPTIONS[sort])
           .skip(skip)
           .limit(limit)
@@ -859,12 +813,12 @@ const ordersRoutes = (
         ordersCollection.countDocuments(query),
       ]);
 
-      const totalPages = totalOrders > 0 ? Math.ceil(totalOrders / limit) : 0;
+      const totalPages =
+        totalOrders > 0 ? Math.ceil(totalOrders / limit) : 0;
 
       return res.status(200).json({
         success: true,
         message: "Orders fetched successfully.",
-
         data: orders,
 
         pagination: {
@@ -880,24 +834,34 @@ const ordersRoutes = (
           search,
           status,
           sort,
+          paymentStatus,
         },
       });
     } catch (error) {
-      console.error("GET /orders ERROR:", error?.stack || error);
+      console.error(
+        "GET /orders ERROR:",
+        error?.stack || error?.message || error,
+      );
 
       return res.status(500).json({
         success: false,
         message: "Failed to fetch orders.",
       });
     }
-  });
+  },
+);
 
   // ============================================================
-  // ADMIN: ORDER STATS
+  // ADMIN - ORDER STATS
   // GET /orders/stats
   // ============================================================
 
-  router.get("/stats", verifyToken, verifyAdmin, async (req, res) => {
+router.get(
+  "/stats",
+  verifyToken,
+  verifyUser(usersCollection),
+  verifyAdmin,
+  async (req, res) => {
     try {
       const [
         totalOrders,
@@ -960,11 +924,12 @@ const ordersRoutes = (
           .toArray(),
       ]);
 
-      const totalRevenue = round(revenueResult?.[0]?.totalRevenue);
+      const totalRevenue = round(
+        revenueResult?.[0]?.totalRevenue,
+      );
 
       return res.status(200).json({
         success: true,
-
         message: "Order statistics fetched successfully.",
 
         data: {
@@ -979,17 +944,299 @@ const ordersRoutes = (
         },
       });
     } catch (error) {
-      console.error("GET /orders/stats ERROR:", error?.stack || error);
+      console.error(
+        "GET /orders/stats ERROR:",
+        error?.stack || error?.message || error,
+      );
 
       return res.status(500).json({
         success: false,
         message: "Failed to fetch order statistics.",
       });
     }
-  });
+  },
+);
 
   // ============================================================
-  // USER: GET MY ORDERS
+  // ADMIN - GET SINGLE ORDER
+  // GET /orders/:id
+  // ============================================================
+
+  router.get(
+    "/:id",
+    verifyToken,
+    verifyUser(usersCollection),
+    verifyAdmin,
+    async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        if (!isValidObjectId(id)) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid order ID.",
+          });
+        }
+
+        const order = await ordersCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!order) {
+          return res.status(404).json({
+            success: false,
+            message: "Order not found.",
+          });
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: "Order fetched successfully.",
+
+          data: {
+            ...order,
+
+            summary: {
+              totalItems: Number(order.totalItems) || 0,
+
+              totalQuantity: Number(order.totalQuantity) || 0,
+
+              subtotal: round(order.subtotal),
+
+              totalDiscount: round(order.totalDiscount),
+
+              shipping: round(order.shipping),
+              tax: round(order.tax),
+
+              grandTotal: round(order.grandTotal),
+            },
+          },
+        });
+      } catch (error) {
+        console.error("GET /orders/:id ERROR:", error?.stack || error);
+
+        return res.status(500).json({
+          success: false,
+          message: "Failed to fetch order.",
+        });
+      }
+    },
+  );
+
+  // ============================================================
+  // ADMIN - UPDATE ORDER STATUS
+  // PATCH /orders/status/:id
+  // ============================================================
+
+  router.patch(
+    "/status/:id",
+    verifyToken,
+    verifyUser(usersCollection),
+    verifyAdmin,
+    async (req, res) => {
+      const session = client.startSession();
+
+      try {
+        const { id } = req.params;
+
+        if (!isValidObjectId(id)) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid order ID.",
+          });
+        }
+
+        const nextStatus =
+          typeof req.body?.status === "string"
+            ? req.body.status.trim().toLowerCase()
+            : "";
+
+        if (!ORDER_STATUSES.includes(nextStatus)) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid order status.",
+          });
+        }
+
+        const customNote = normalizeString(req.body?.note, 300);
+
+        const orderId = new ObjectId(id);
+
+        let updatedOrder = null;
+
+        await session.withTransaction(async () => {
+          const order = await ordersCollection.findOne(
+            { _id: orderId },
+            { session },
+          );
+
+          if (!order) {
+            throw createRouteError("Order not found.", 404);
+          }
+
+          if (order.status === nextStatus) {
+            throw createRouteError(`Order is already "${nextStatus}".`, 400);
+          }
+
+          const transitionError = getTransitionError(order.status, nextStatus);
+
+          if (transitionError) {
+            throw createRouteError(transitionError, 400);
+          }
+
+          const now = new Date();
+
+          const timelineEntry = {
+            status: nextStatus,
+            note: customNote || STATUS_NOTES[nextStatus],
+            createdAt: now,
+          };
+
+          const updateResult = await ordersCollection.updateOne(
+            {
+              _id: orderId,
+              status: order.status,
+            },
+            {
+              $set: {
+                status: nextStatus,
+                updatedAt: now,
+              },
+
+              $push: {
+                timeline: timelineEntry,
+              },
+            },
+            { session },
+          );
+
+          if (updateResult.modifiedCount !== 1) {
+            throw createRouteError("Order status could not be updated.", 409);
+          }
+
+          updatedOrder = {
+            ...order,
+            status: nextStatus,
+            updatedAt: now,
+
+            timeline: [
+              ...(Array.isArray(order.timeline) ? order.timeline : []),
+
+              timelineEntry,
+            ],
+          };
+        });
+
+        return res.status(200).json({
+          success: true,
+          message: "Order status updated successfully.",
+
+          data: {
+            _id: updatedOrder._id,
+            orderNumber: updatedOrder.orderNumber,
+            status: updatedOrder.status,
+            paymentStatus: updatedOrder.paymentStatus,
+            timeline: updatedOrder.timeline,
+            updatedAt: updatedOrder.updatedAt,
+          },
+        });
+      } catch (error) {
+        console.error("PATCH /orders/status/:id ERROR:", error?.stack || error);
+
+        return res.status(getErrorStatusCode(error)).json({
+          success: false,
+          message: error?.message || "Failed to update order status.",
+        });
+      } finally {
+        await session.endSession();
+      }
+    },
+  );
+
+  // ============================================================
+  // ADMIN - UPDATE PAYMENT STATUS
+  // PATCH /orders/payment-status/:id
+  // ============================================================
+
+  router.patch(
+    "/payment-status/:id",
+    verifyToken,
+    verifyUser(usersCollection),
+    verifyAdmin,
+    async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        if (!isValidObjectId(id)) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid order ID.",
+          });
+        }
+
+        const paymentStatus = getPaymentStatus(req.body?.paymentStatus);
+
+        if (!paymentStatus) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid payment status.",
+          });
+        }
+
+        const orderId = new ObjectId(id);
+
+        const now = new Date();
+
+        const updateResult = await ordersCollection.updateOne(
+          { _id: orderId },
+          {
+            $set: {
+              paymentStatus,
+              updatedAt: now,
+            },
+          },
+        );
+
+        if (updateResult.matchedCount !== 1) {
+          return res.status(404).json({
+            success: false,
+            message: "Order not found.",
+          });
+        }
+
+        const updatedOrder = await ordersCollection.findOne(
+          { _id: orderId },
+          {
+            projection: {
+              orderNumber: 1,
+              paymentStatus: 1,
+              status: 1,
+              updatedAt: 1,
+            },
+          },
+        );
+
+        return res.status(200).json({
+          success: true,
+          message: "Payment status updated successfully.",
+          data: updatedOrder,
+        });
+      } catch (error) {
+        console.error(
+          "PATCH /orders/payment-status/:id ERROR:",
+          error?.stack || error,
+        );
+
+        return res.status(500).json({
+          success: false,
+          message: "Failed to update payment status.",
+        });
+      }
+    },
+  );
+
+  // ============================================================
+  // CUSTOMER - GET MY ORDERS
   // GET /orders/my
   // ============================================================
 
@@ -999,7 +1246,7 @@ const ordersRoutes = (
     verifyUser(usersCollection),
     async (req, res) => {
       try {
-        const email = normalizeEmail(req.dbUser?.email);
+        const email = normalizeEmail(req.dbUser?.email || req.user?.email);
 
         if (!email) {
           return res.status(401).json({
@@ -1011,6 +1258,7 @@ const ordersRoutes = (
         const { page, limit, skip } = getPagination(req.query);
 
         const status = getStatus(req.query.status);
+
         const sort = getSort(req.query.sort);
 
         const query = { email };
@@ -1040,7 +1288,9 @@ const ordersRoutes = (
         return res.status(200).json({
           success: true,
           message: "Your orders fetched successfully.",
+
           data: orders,
+
           pagination: {
             page,
             limit,
@@ -1049,6 +1299,7 @@ const ordersRoutes = (
             hasNextPage: page < totalPages,
             hasPrevPage: page > 1,
           },
+
           filters: {
             status,
             sort,
@@ -1066,7 +1317,7 @@ const ordersRoutes = (
   );
 
   // ============================================================
-  // USER: GET MY ORDER DETAILS
+  // CUSTOMER - GET MY SINGLE ORDER
   // GET /orders/my/:id
   // ============================================================
 
@@ -1104,13 +1355,25 @@ const ordersRoutes = (
 
       return res.status(200).json({
         success: true,
-
         message: "Order fetched successfully.",
 
         data: {
           ...order,
 
-          summary: createOrderSummary(order),
+          summary: {
+            totalItems: Number(order.totalItems) || 0,
+
+            totalQuantity: Number(order.totalQuantity) || 0,
+
+            subtotal: round(order.subtotal),
+
+            totalDiscount: round(order.totalDiscount),
+
+            shipping: round(order.shipping),
+            tax: round(order.tax),
+
+            grandTotal: round(order.grandTotal),
+          },
         },
       });
     } catch (error) {
@@ -1124,55 +1387,7 @@ const ordersRoutes = (
   });
 
   // ============================================================
-  // ADMIN: GET ORDER DETAILS
-  // GET /orders/:id
-  // ============================================================
-
-  router.get("/:id", verifyToken, verifyAdmin, async (req, res) => {
-    try {
-      const { id } = req.params;
-
-      if (!isValidObjectId(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid order ID.",
-        });
-      }
-
-      const order = await ordersCollection.findOne({
-        _id: new ObjectId(id),
-      });
-
-      if (!order) {
-        return res.status(404).json({
-          success: false,
-          message: "Order not found.",
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-
-        message: "Order fetched successfully.",
-
-        data: {
-          ...order,
-
-          summary: createOrderSummary(order),
-        },
-      });
-    } catch (error) {
-      console.error("GET /orders/:id ERROR:", error?.stack || error);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch order.",
-      });
-    }
-  });
-
-  // ============================================================
-  // USER: CANCEL ORDER
+  // CUSTOMER - CANCEL ORDER
   // PATCH /orders/cancel/:id
   // ============================================================
 
@@ -1208,37 +1423,52 @@ const ordersRoutes = (
             _id: orderId,
             email,
           },
-          {
-            session,
-          },
+          { session },
         );
 
         if (!order) {
-          const error = new Error("Order not found.");
-
-          error.statusCode = 404;
-          throw error;
+          throw createRouteError("Order not found.", 404);
         }
 
-        if (order.status === "cancelled") {
-          const error = new Error("Order is already cancelled.");
-
-          error.statusCode = 400;
-          throw error;
+        if (!CUSTOMER_CANCELLABLE_STATUSES.includes(order.status)) {
+          throw createRouteError("This order can no longer be cancelled.", 400);
         }
 
-        if (["shipped", "delivered"].includes(order.status)) {
-          const error = new Error("This order can no longer be cancelled.");
+        const now = new Date();
 
-          error.statusCode = 400;
-          throw error;
+        const timelineEntry = {
+          status: "cancelled",
+          note: "Order cancelled by customer.",
+          createdAt: now,
+        };
+
+        const updateResult = await ordersCollection.updateOne(
+          {
+            _id: orderId,
+            email,
+            status: {
+              $in: CUSTOMER_CANCELLABLE_STATUSES,
+            },
+          },
+          {
+            $set: {
+              status: "cancelled",
+              updatedAt: now,
+            },
+
+            $push: {
+              timeline: timelineEntry,
+            },
+          },
+          { session },
+        );
+
+        if (updateResult.modifiedCount !== 1) {
+          throw createRouteError("Order could not be cancelled.", 409);
         }
 
+        // Restore stock.
         const items = Array.isArray(order.items) ? order.items : [];
-
-        // --------------------------------------------------
-        // RESTORE STOCK
-        // --------------------------------------------------
 
         for (const item of items) {
           const quantity = Number(item?.quantity);
@@ -1259,87 +1489,43 @@ const ordersRoutes = (
               },
 
               $set: {
-                updatedAt: new Date(),
+                updatedAt: now,
               },
             },
-            {
-              session,
-            },
+            { session },
           );
-        }
-
-        const now = new Date();
-
-        const result = await ordersCollection.updateOne(
-          {
-            _id: orderId,
-            email,
-
-            status: {
-              $in: ["pending", "confirmed", "processing"],
-            },
-          },
-          {
-            $set: {
-              status: "cancelled",
-
-              updatedAt: now,
-            },
-
-            $push: {
-              timeline: {
-                status: "cancelled",
-
-                note: "Order cancelled by customer.",
-
-                createdAt: now,
-              },
-            },
-          },
-          {
-            session,
-          },
-        );
-
-        if (result.modifiedCount !== 1) {
-          const error = new Error("Order could not be cancelled.");
-
-          error.statusCode = 409;
-          throw error;
         }
 
         cancelledOrder = {
           ...order,
-
           status: "cancelled",
-
           updatedAt: now,
+
+          timeline: [
+            ...(Array.isArray(order.timeline) ? order.timeline : []),
+
+            timelineEntry,
+          ],
         };
       });
 
       return res.status(200).json({
         success: true,
-
         message: "Order cancelled successfully.",
 
         data: {
           _id: cancelledOrder._id,
-
           orderNumber: cancelledOrder.orderNumber,
-
           status: cancelledOrder.status,
-
+          paymentStatus: cancelledOrder.paymentStatus,
+          timeline: cancelledOrder.timeline,
           updatedAt: cancelledOrder.updatedAt,
         },
       });
     } catch (error) {
       console.error("PATCH /orders/cancel/:id ERROR:", error?.stack || error);
 
-      const statusCode = Number.isInteger(error?.statusCode)
-        ? error.statusCode
-        : 500;
-
-      return res.status(statusCode).json({
+      return res.status(getErrorStatusCode(error)).json({
         success: false,
         message: error?.message || "Failed to cancel order.",
       });
