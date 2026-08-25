@@ -1,32 +1,65 @@
+// ============================================================
+// VERIFY ADMIN
+// ============================================================
+
 const verifyAdmin = (req, res, next) => {
   try {
-    if (!req.dbUser) {
+    const user = req.dbUser;
+
+    // --------------------------------------------------------
+    // Database user unavailable
+    // --------------------------------------------------------
+
+    if (!user) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized: User information unavailable.",
+        code: "auth/user-unavailable",
+        message: "Unauthorized: User information is unavailable.",
       });
     }
 
-    if (req.dbUser.status === "blocked") {
+    // --------------------------------------------------------
+    // Account status
+    // --------------------------------------------------------
+
+    if (user.status === "blocked") {
       return res.status(403).json({
         success: false,
-        message: "Forbidden: Your account is blocked.",
+        code: "user/blocked",
+        message: "Forbidden: Your account has been blocked.",
       });
     }
 
-    if (req.dbUser.role !== "admin") {
+    if (user.status && user.status !== "active") {
       return res.status(403).json({
         success: false,
+        code: "user/inactive",
+        message: "Forbidden: Your account is not active.",
+      });
+    }
+
+    // --------------------------------------------------------
+    // Role
+    // --------------------------------------------------------
+
+    if (user.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        code: "auth/admin-required",
         message: "Forbidden: Admin access required.",
       });
     }
 
     next();
   } catch (error) {
-    console.error("VERIFY ADMIN ERROR:", error);
+    console.error(
+      "VERIFY ADMIN ERROR:",
+      error?.stack || error?.message || error,
+    );
 
     return res.status(500).json({
       success: false,
+      code: "auth/admin-verification-failed",
       message: "Failed to verify admin access.",
     });
   }
