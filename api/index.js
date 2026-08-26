@@ -359,9 +359,7 @@ const mountRoutes = () => {
   // ORDERS
   // ==========================================================
 
-  // ==========================================================
-  // ORDERS
-  // ==========================================================
+
 
   app.use(
     "/orders",
@@ -371,7 +369,6 @@ const mountRoutes = () => {
       cartsCollection,
       productsCollection,
       usersCollection,
-      verifyToken,
     ),
   );
 
