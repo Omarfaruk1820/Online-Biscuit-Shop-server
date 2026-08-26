@@ -7,18 +7,23 @@ import verifyUser from "../middleware/verifyUser.js";
 import verifyAdmin from "../middleware/verifyAdmin.js";
 import calculateOrderSummary from "../utils/orderSummary.js";
 
+// ============================================================
+// ORDERS ROUTES
+// ============================================================
+
 const ordersRoutes = (
   client,
   ordersCollection,
   cartsCollection,
   productsCollection,
   usersCollection,
+  verifyToken,
 ) => {
   const router = Router();
 
-  // ============================================================
+  // ==========================================================
   // CONSTANTS
-  // ============================================================
+  // ==========================================================
 
   const ORDER_STATUSES = [
     "pending",
@@ -31,7 +36,10 @@ const ordersRoutes = (
 
   const PAYMENT_STATUSES = ["pending", "paid", "failed", "refunded", "unpaid"];
 
-  const ALLOWED_STATUSES = ["all", ...ORDER_STATUSES];
+  const PAYMENT_METHODS = ["cash_on_delivery"];
+
+  const MAX_PAGE_LIMIT = 100;
+  const MAX_CART_QUANTITY = 99;
 
   const SORT_OPTIONS = {
     newest: { createdAt: -1 },
@@ -60,9 +68,6 @@ const ordersRoutes = (
 
   const CUSTOMER_CANCELLABLE_STATUSES = ["pending", "confirmed", "processing"];
 
-  const MAX_PAGE_LIMIT = 100;
-  const MAX_CART_QUANTITY = 99;
-
   const PRODUCT_PROJECTION = {
     sku: 1,
     name: 1,
@@ -75,9 +80,9 @@ const ordersRoutes = (
     stock: 1,
   };
 
-  // ============================================================
-  // HELPERS
-  // ============================================================
+  // ==========================================================
+  // BASIC VALIDATION HELPERS
+  // ==========================================================
 
   const normalizeString = (value = "", maxLength = 200) => {
     if (typeof value !== "string") {
@@ -110,7 +115,7 @@ const ordersRoutes = (
       return null;
     }
 
-    const stringValue = String(value);
+    const stringValue = String(value).trim();
 
     if (!ObjectId.isValid(stringValue)) {
       return null;
@@ -146,9 +151,9 @@ const ordersRoutes = (
     return 500;
   };
 
-  // ============================================================
+  // ==========================================================
   // PAGINATION
-  // ============================================================
+  // ==========================================================
 
   const getPagination = (query = {}) => {
     let page = Number.parseInt(query.page, 10);
@@ -171,15 +176,15 @@ const ordersRoutes = (
     };
   };
 
-  // ============================================================
+  // ==========================================================
   // FILTERS
-  // ============================================================
+  // ==========================================================
 
   const getStatus = (value) => {
     const status =
       typeof value === "string" ? value.trim().toLowerCase() : "all";
 
-    return ALLOWED_STATUSES.includes(status) ? status : "all";
+    return ["all", ...ORDER_STATUSES].includes(status) ? status : "all";
   };
 
   const getSort = (value) => {
@@ -197,7 +202,6 @@ const ordersRoutes = (
     return PAYMENT_STATUSES.includes(status) ? status : "";
   };
 
-  // Support both frontend "cod" and database "cash_on_delivery".
   const getPaymentMethod = (value) => {
     const method = typeof value === "string" ? value.trim().toLowerCase() : "";
 
@@ -205,16 +209,16 @@ const ordersRoutes = (
       return "cash_on_delivery";
     }
 
-    if (method === "cash_on_delivery") {
-      return "cash_on_delivery";
+    if (PAYMENT_METHODS.includes(method)) {
+      return method;
     }
 
     return "";
   };
 
-  // ============================================================
+  // ==========================================================
   // ORDER NUMBER
-  // ============================================================
+  // ==========================================================
 
   const createOrderNumber = () => {
     const timestamp = Date.now().toString(36).toUpperCase();
@@ -244,9 +248,9 @@ const ordersRoutes = (
     throw createRouteError("Failed to generate a unique order number.", 500);
   };
 
-  // ============================================================
+  // ==========================================================
   // CUSTOMER
-  // ============================================================
+  // ==========================================================
 
   const normalizeCustomer = (customer = {}) => {
     return {
@@ -299,9 +303,9 @@ const ordersRoutes = (
     return null;
   };
 
-  // ============================================================
-  // PRODUCT
-  // ============================================================
+  // ==========================================================
+  // PRODUCT HELPERS
+  // ==========================================================
 
   const getProductName = (product) => {
     return product?.name?.trim() || "Unknown Product";
@@ -343,7 +347,7 @@ const ordersRoutes = (
     }
 
     if (stock === 0) {
-      throw createRouteError(`"${productName}" is out of stock.`, 400);
+      throw createRouteError(`"${productName}" is out of stock.`, 409);
     }
 
     if (quantity > stock) {
@@ -354,9 +358,9 @@ const ordersRoutes = (
     }
   };
 
-  // ============================================================
+  // ==========================================================
   // ORDER ITEMS
-  // ============================================================
+  // ==========================================================
 
   const normalizeOrderItems = (items = []) => {
     if (!Array.isArray(items)) {
@@ -380,9 +384,9 @@ const ordersRoutes = (
     }));
   };
 
-  // ============================================================
+  // ==========================================================
   // SEARCH
-  // ============================================================
+  // ==========================================================
 
   const createSearchQuery = (search) => {
     if (!search) {
@@ -421,9 +425,9 @@ const ordersRoutes = (
     };
   };
 
-  // ============================================================
+  // ==========================================================
   // STATUS
-  // ============================================================
+  // ==========================================================
 
   const getTransitionError = (currentStatus, nextStatus) => {
     const allowedStatuses = STATUS_TRANSITIONS[currentStatus] || [];
@@ -435,10 +439,32 @@ const ordersRoutes = (
     return null;
   };
 
-  // ============================================================
+  // ==========================================================
+  // ADMIN / CUSTOMER SUMMARY
+  // ==========================================================
+
+  const buildOrderSummary = (order) => {
+    return {
+      totalItems: Number(order?.totalItems) || 0,
+
+      totalQuantity: Number(order?.totalQuantity) || 0,
+
+      subtotal: round(order?.subtotal),
+
+      totalDiscount: round(order?.totalDiscount),
+
+      shipping: round(order?.shipping),
+
+      tax: round(order?.tax),
+
+      grandTotal: round(order?.grandTotal),
+    };
+  };
+
+  // ==========================================================
   // CREATE ORDER
   // POST /orders
-  // ============================================================
+  // ==========================================================
 
   router.post("/", verifyToken, async (req, res) => {
     const session = client.startSession();
@@ -449,6 +475,7 @@ const ordersRoutes = (
       if (!email) {
         return res.status(401).json({
           success: false,
+          code: "auth/email-missing",
           message: "Unauthorized.",
         });
       }
@@ -476,9 +503,9 @@ const ordersRoutes = (
       let createdOrder = null;
 
       await session.withTransaction(async () => {
-        // ------------------------------------------------------
+        // ------------------------------------------------
         // LOAD CART
-        // ------------------------------------------------------
+        // ------------------------------------------------
 
         const cartItems = await cartsCollection
           .find(
@@ -503,9 +530,9 @@ const ordersRoutes = (
           throw createRouteError("Cart contains too many products.", 400);
         }
 
-        // ------------------------------------------------------
-        // CART DATA
-        // ------------------------------------------------------
+        // ------------------------------------------------
+        // NORMALIZE CART
+        // ------------------------------------------------
 
         const productIds = [];
         const cartMap = new Map();
@@ -544,9 +571,9 @@ const ordersRoutes = (
           productIds.push(productId);
         }
 
-        // ------------------------------------------------------
+        // ------------------------------------------------
         // LOAD PRODUCTS
-        // ------------------------------------------------------
+        // ------------------------------------------------
 
         const products = await productsCollection
           .find(
@@ -566,9 +593,9 @@ const ordersRoutes = (
           products.map((product) => [product._id.toString(), product]),
         );
 
-        // ------------------------------------------------------
+        // ------------------------------------------------
         // BUILD ORDER ITEMS
-        // ------------------------------------------------------
+        // ------------------------------------------------
 
         const orderItems = [];
 
@@ -576,6 +603,7 @@ const ordersRoutes = (
           const key = productId.toString();
 
           const cartItem = cartMap.get(key);
+
           const product = productMap.get(key);
 
           if (!product) {
@@ -597,24 +625,36 @@ const ordersRoutes = (
 
           orderItems.push({
             productId: product._id,
+
             sku: normalizeString(product.sku, 100),
+
             name: getProductName(product),
+
             image: normalizeString(product.image, 1000),
+
             brand: normalizeString(product.brand, 100),
+
             category: normalizeString(product.category, 100),
+
             weight: product.weight ?? null,
+
             quantity: cartItem.quantity,
+
             price: pricing.price,
+
             discount: pricing.discount,
+
             finalPrice: pricing.finalPrice,
+
             subtotal,
+
             discountAmount,
           });
         }
 
-        // ------------------------------------------------------
-        // SUMMARY
-        // ------------------------------------------------------
+        // ------------------------------------------------
+        // CALCULATE SUMMARY
+        // ------------------------------------------------
 
         const calculatedSummary = calculateOrderSummary(orderItems);
 
@@ -634,15 +674,15 @@ const ordersRoutes = (
           grandTotal: round(calculatedSummary.grandTotal),
         };
 
-        // ------------------------------------------------------
+        // ------------------------------------------------
         // ORDER NUMBER
-        // ------------------------------------------------------
+        // ------------------------------------------------
 
         const orderNumber = await createUniqueOrderNumber(session);
 
-        // ------------------------------------------------------
+        // ------------------------------------------------
         // DECREASE STOCK
-        // ------------------------------------------------------
+        // ------------------------------------------------
 
         for (const item of orderItems) {
           const result = await productsCollection.updateOne(
@@ -656,13 +696,12 @@ const ordersRoutes = (
               $inc: {
                 stock: -item.quantity,
               },
+
               $set: {
                 updatedAt: new Date(),
               },
             },
-            {
-              session,
-            },
+            { session },
           );
 
           if (!result.acknowledged || result.modifiedCount !== 1) {
@@ -673,28 +712,39 @@ const ordersRoutes = (
           }
         }
 
-        // ------------------------------------------------------
+        // ------------------------------------------------
         // CREATE ORDER
-        // ------------------------------------------------------
+        // ------------------------------------------------
 
         const now = new Date();
 
         const orderDocument = {
           orderNumber,
+
           email,
+
           customer,
+
           items: normalizeOrderItems(orderItems),
 
           totalItems: summary.totalItems,
+
           totalQuantity: summary.totalQuantity,
+
           subtotal: summary.subtotal,
+
           totalDiscount: summary.totalDiscount,
+
           shipping: summary.shipping,
+
           tax: summary.tax,
+
           grandTotal: summary.grandTotal,
 
           paymentMethod,
+
           paymentStatus: "pending",
+
           status: "pending",
 
           timeline: [
@@ -706,6 +756,7 @@ const ordersRoutes = (
           ],
 
           createdAt: now,
+
           updatedAt: now,
         };
 
@@ -717,9 +768,9 @@ const ordersRoutes = (
           throw createRouteError("Failed to create order.", 500);
         }
 
-        // ------------------------------------------------------
+        // ------------------------------------------------
         // CLEAR CART
-        // ------------------------------------------------------
+        // ------------------------------------------------
 
         const deleteResult = await cartsCollection.deleteMany(
           { email },
@@ -732,6 +783,7 @@ const ordersRoutes = (
 
         createdOrder = {
           _id: insertResult.insertedId,
+
           ...orderDocument,
         };
       });
@@ -744,9 +796,7 @@ const ordersRoutes = (
     } catch (error) {
       console.error("POST /orders ERROR:", error?.stack || error);
 
-      const statusCode = getErrorStatusCode(error);
-
-      return res.status(statusCode).json({
+      return res.status(getErrorStatusCode(error)).json({
         success: false,
         message:
           error?.code === 11000
@@ -758,181 +808,113 @@ const ordersRoutes = (
     }
   });
 
-  // ============================================================
+  // ==========================================================
   // ADMIN - GET ALL ORDERS
   // GET /orders
-  // ============================================================
+  // ==========================================================
 
-router.get(
-  "/",
-  verifyToken,
-  verifyUser(usersCollection),
-  verifyAdmin,
-  async (req, res) => {
-    try {
-      const { page, limit, skip } = getPagination(req.query);
+  router.get(
+    "/",
+    verifyToken,
+    verifyUser(usersCollection),
+    verifyAdmin,
+    async (req, res) => {
+      try {
+        const { page, limit, skip } = getPagination(req.query);
 
-      const search =
-        typeof req.query.search === "string"
-          ? req.query.search.trim().slice(0, 100)
-          : "";
+        const search =
+          typeof req.query.search === "string"
+            ? req.query.search.trim().slice(0, 100)
+            : "";
 
-      const status = getStatus(req.query.status);
-      const sort = getSort(req.query.sort);
-      const paymentStatus = getPaymentStatus(req.query.paymentStatus);
+        const status = getStatus(req.query.status);
 
-      const query = {};
+        const sort = getSort(req.query.sort);
 
-      if (status !== "all") {
-        query.status = status;
+        const paymentStatus = getPaymentStatus(req.query.paymentStatus);
+
+        const query = {};
+
+        if (status !== "all") {
+          query.status = status;
+        }
+
+        if (paymentStatus) {
+          query.paymentStatus = paymentStatus;
+        }
+
+        const searchQuery = createSearchQuery(search);
+
+        if (Object.keys(searchQuery).length > 0) {
+          Object.assign(query, searchQuery);
+        }
+
+        const projection = {
+          items: 0,
+          timeline: 0,
+        };
+
+        const [orders, totalOrders] = await Promise.all([
+          ordersCollection
+            .find(query, {
+              projection,
+            })
+            .sort(SORT_OPTIONS[sort])
+            .skip(skip)
+            .limit(limit)
+            .toArray(),
+
+          ordersCollection.countDocuments(query),
+        ]);
+
+        const totalPages = totalOrders > 0 ? Math.ceil(totalOrders / limit) : 0;
+
+        return res.status(200).json({
+          success: true,
+          message: "Orders fetched successfully.",
+
+          data: orders,
+
+          pagination: {
+            page,
+            limit,
+            totalOrders,
+            totalPages,
+            hasNextPage: page < totalPages,
+            hasPrevPage: page > 1,
+          },
+
+          filters: {
+            search,
+            status,
+            sort,
+            paymentStatus,
+          },
+        });
+      } catch (error) {
+        console.error("GET /orders ERROR:", error?.stack || error);
+
+        return res.status(500).json({
+          success: false,
+          message: "Failed to fetch orders.",
+        });
       }
+    },
+  );
 
-      if (paymentStatus) {
-        query.paymentStatus = paymentStatus;
-      }
-
-      const searchQuery = createSearchQuery(search);
-
-      if (Object.keys(searchQuery).length > 0) {
-        Object.assign(query, searchQuery);
-      }
-
-      const projection = {
-        items: 0,
-        timeline: 0,
-      };
-
-      const [orders, totalOrders] = await Promise.all([
-        ordersCollection
-          .find(query, { projection })
-          .sort(SORT_OPTIONS[sort])
-          .skip(skip)
-          .limit(limit)
-          .toArray(),
-
-        ordersCollection.countDocuments(query),
-      ]);
-
-      const totalPages =
-        totalOrders > 0 ? Math.ceil(totalOrders / limit) : 0;
-
-      return res.status(200).json({
-        success: true,
-        message: "Orders fetched successfully.",
-        data: orders,
-
-        pagination: {
-          page,
-          limit,
-          totalOrders,
-          totalPages,
-          hasNextPage: page < totalPages,
-          hasPrevPage: page > 1,
-        },
-
-        filters: {
-          search,
-          status,
-          sort,
-          paymentStatus,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "GET /orders ERROR:",
-        error?.stack || error?.message || error,
-      );
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch orders.",
-      });
-    }
-  },
-);
-
-  // ============================================================
+  // ==========================================================
   // ADMIN - ORDER STATS
   // GET /orders/stats
-  // ============================================================
+  // ==========================================================
 
-router.get(
-  "/stats",
-  verifyToken,
-  verifyUser(usersCollection),
-  verifyAdmin,
-  async (req, res) => {
-    try {
-      const [
-        totalOrders,
-        pendingOrders,
-        confirmedOrders,
-        processingOrders,
-        shippedOrders,
-        deliveredOrders,
-        cancelledOrders,
-        revenueResult,
-      ] = await Promise.all([
-        ordersCollection.countDocuments({}),
-
-        ordersCollection.countDocuments({
-          status: "pending",
-        }),
-
-        ordersCollection.countDocuments({
-          status: "confirmed",
-        }),
-
-        ordersCollection.countDocuments({
-          status: "processing",
-        }),
-
-        ordersCollection.countDocuments({
-          status: "shipped",
-        }),
-
-        ordersCollection.countDocuments({
-          status: "delivered",
-        }),
-
-        ordersCollection.countDocuments({
-          status: "cancelled",
-        }),
-
-        ordersCollection
-          .aggregate([
-            {
-              $match: {
-                status: {
-                  $ne: "cancelled",
-                },
-              },
-            },
-
-            {
-              $group: {
-                _id: null,
-
-                totalRevenue: {
-                  $sum: {
-                    $ifNull: ["$grandTotal", 0],
-                  },
-                },
-              },
-            },
-          ])
-          .toArray(),
-      ]);
-
-      const totalRevenue = round(
-        revenueResult?.[0]?.totalRevenue,
-      );
-
-      return res.status(200).json({
-        success: true,
-        message: "Order statistics fetched successfully.",
-
-        data: {
+  router.get(
+    "/stats",
+    verifyToken,
+    verifyUser(usersCollection),
+    verifyAdmin,
+    async (req, res) => {
+      try {
+        const [
           totalOrders,
           pendingOrders,
           confirmedOrders,
@@ -940,27 +922,91 @@ router.get(
           shippedOrders,
           deliveredOrders,
           cancelledOrders,
-          totalRevenue,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "GET /orders/stats ERROR:",
-        error?.stack || error?.message || error,
-      );
+          revenueResult,
+        ] = await Promise.all([
+          ordersCollection.countDocuments({}),
 
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch order statistics.",
-      });
-    }
-  },
-);
+          ordersCollection.countDocuments({
+            status: "pending",
+          }),
 
-  // ============================================================
+          ordersCollection.countDocuments({
+            status: "confirmed",
+          }),
+
+          ordersCollection.countDocuments({
+            status: "processing",
+          }),
+
+          ordersCollection.countDocuments({
+            status: "shipped",
+          }),
+
+          ordersCollection.countDocuments({
+            status: "delivered",
+          }),
+
+          ordersCollection.countDocuments({
+            status: "cancelled",
+          }),
+
+          ordersCollection
+            .aggregate([
+              {
+                $match: {
+                  status: {
+                    $ne: "cancelled",
+                  },
+                },
+              },
+
+              {
+                $group: {
+                  _id: null,
+
+                  totalRevenue: {
+                    $sum: {
+                      $ifNull: ["$grandTotal", 0],
+                    },
+                  },
+                },
+              },
+            ])
+            .toArray(),
+        ]);
+
+        const totalRevenue = round(revenueResult?.[0]?.totalRevenue);
+
+        return res.status(200).json({
+          success: true,
+          message: "Order statistics fetched successfully.",
+
+          data: {
+            totalOrders,
+            pendingOrders,
+            confirmedOrders,
+            processingOrders,
+            shippedOrders,
+            deliveredOrders,
+            cancelledOrders,
+            totalRevenue,
+          },
+        });
+      } catch (error) {
+        console.error("GET /orders/stats ERROR:", error?.stack || error);
+
+        return res.status(500).json({
+          success: false,
+          message: "Failed to fetch order statistics.",
+        });
+      }
+    },
+  );
+
+  // ==========================================================
   // ADMIN - GET SINGLE ORDER
   // GET /orders/:id
-  // ============================================================
+  // ==========================================================
 
   router.get(
     "/:id",
@@ -971,7 +1017,9 @@ router.get(
       try {
         const { id } = req.params;
 
-        if (!isValidObjectId(id)) {
+        const orderId = toObjectId(id);
+
+        if (!orderId) {
           return res.status(400).json({
             success: false,
             message: "Invalid order ID.",
@@ -979,7 +1027,7 @@ router.get(
         }
 
         const order = await ordersCollection.findOne({
-          _id: new ObjectId(id),
+          _id: orderId,
         });
 
         if (!order) {
@@ -996,20 +1044,7 @@ router.get(
           data: {
             ...order,
 
-            summary: {
-              totalItems: Number(order.totalItems) || 0,
-
-              totalQuantity: Number(order.totalQuantity) || 0,
-
-              subtotal: round(order.subtotal),
-
-              totalDiscount: round(order.totalDiscount),
-
-              shipping: round(order.shipping),
-              tax: round(order.tax),
-
-              grandTotal: round(order.grandTotal),
-            },
+            summary: buildOrderSummary(order),
           },
         });
       } catch (error) {
@@ -1023,10 +1058,10 @@ router.get(
     },
   );
 
-  // ============================================================
+  // ==========================================================
   // ADMIN - UPDATE ORDER STATUS
   // PATCH /orders/status/:id
-  // ============================================================
+  // ==========================================================
 
   router.patch(
     "/status/:id",
@@ -1037,9 +1072,9 @@ router.get(
       const session = client.startSession();
 
       try {
-        const { id } = req.params;
+        const orderId = toObjectId(req.params.id);
 
-        if (!isValidObjectId(id)) {
+        if (!orderId) {
           return res.status(400).json({
             success: false,
             message: "Invalid order ID.",
@@ -1060,13 +1095,13 @@ router.get(
 
         const customNote = normalizeString(req.body?.note, 300);
 
-        const orderId = new ObjectId(id);
-
         let updatedOrder = null;
 
         await session.withTransaction(async () => {
           const order = await ordersCollection.findOne(
-            { _id: orderId },
+            {
+              _id: orderId,
+            },
             { session },
           );
 
@@ -1116,7 +1151,9 @@ router.get(
 
           updatedOrder = {
             ...order,
+
             status: nextStatus,
+
             updatedAt: now,
 
             timeline: [
@@ -1133,10 +1170,15 @@ router.get(
 
           data: {
             _id: updatedOrder._id,
+
             orderNumber: updatedOrder.orderNumber,
+
             status: updatedOrder.status,
+
             paymentStatus: updatedOrder.paymentStatus,
+
             timeline: updatedOrder.timeline,
+
             updatedAt: updatedOrder.updatedAt,
           },
         });
@@ -1153,10 +1195,10 @@ router.get(
     },
   );
 
-  // ============================================================
+  // ==========================================================
   // ADMIN - UPDATE PAYMENT STATUS
   // PATCH /orders/payment-status/:id
-  // ============================================================
+  // ==========================================================
 
   router.patch(
     "/payment-status/:id",
@@ -1165,9 +1207,9 @@ router.get(
     verifyAdmin,
     async (req, res) => {
       try {
-        const { id } = req.params;
+        const orderId = toObjectId(req.params.id);
 
-        if (!isValidObjectId(id)) {
+        if (!orderId) {
           return res.status(400).json({
             success: false,
             message: "Invalid order ID.",
@@ -1183,12 +1225,12 @@ router.get(
           });
         }
 
-        const orderId = new ObjectId(id);
-
         const now = new Date();
 
         const updateResult = await ordersCollection.updateOne(
-          { _id: orderId },
+          {
+            _id: orderId,
+          },
           {
             $set: {
               paymentStatus,
@@ -1205,9 +1247,12 @@ router.get(
         }
 
         const updatedOrder = await ordersCollection.findOne(
-          { _id: orderId },
+          {
+            _id: orderId,
+          },
           {
             projection: {
+              _id: 1,
               orderNumber: 1,
               paymentStatus: 1,
               status: 1,
@@ -1219,6 +1264,7 @@ router.get(
         return res.status(200).json({
           success: true,
           message: "Payment status updated successfully.",
+
           data: updatedOrder,
         });
       } catch (error) {
@@ -1235,10 +1281,10 @@ router.get(
     },
   );
 
-  // ============================================================
+  // ==========================================================
   // CUSTOMER - GET MY ORDERS
   // GET /orders/my
-  // ============================================================
+  // ==========================================================
 
   router.get(
     "/my",
@@ -1261,7 +1307,9 @@ router.get(
 
         const sort = getSort(req.query.sort);
 
-        const query = { email };
+        const query = {
+          email,
+        };
 
         if (status !== "all") {
           query.status = status;
@@ -1274,7 +1322,9 @@ router.get(
 
         const [orders, totalOrders] = await Promise.all([
           ordersCollection
-            .find(query, { projection })
+            .find(query, {
+              projection,
+            })
             .sort(SORT_OPTIONS[sort])
             .skip(skip)
             .limit(limit)
@@ -1316,223 +1366,239 @@ router.get(
     },
   );
 
-  // ============================================================
-  // CUSTOMER - GET MY SINGLE ORDER
+  // ==========================================================
+  // CUSTOMER - GET SINGLE ORDER
   // GET /orders/my/:id
-  // ============================================================
+  // ==========================================================
 
-  router.get("/my/:id", verifyToken, async (req, res) => {
-    try {
-      const email = normalizeEmail(req.user?.email);
+  router.get(
+    "/my/:id",
+    verifyToken,
+    verifyUser(usersCollection),
+    async (req, res) => {
+      try {
+        const email = normalizeEmail(req.dbUser?.email || req.user?.email);
 
-      if (!email) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized.",
+        if (!email) {
+          return res.status(401).json({
+            success: false,
+            message: "Unauthorized.",
+          });
+        }
+
+        const orderId = toObjectId(req.params.id);
+
+        if (!orderId) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid order ID.",
+          });
+        }
+
+        const order = await ordersCollection.findOne({
+          _id: orderId,
+          email,
         });
-      }
-
-      const { id } = req.params;
-
-      if (!isValidObjectId(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid order ID.",
-        });
-      }
-
-      const order = await ordersCollection.findOne({
-        _id: new ObjectId(id),
-        email,
-      });
-
-      if (!order) {
-        return res.status(404).json({
-          success: false,
-          message: "Order not found.",
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: "Order fetched successfully.",
-
-        data: {
-          ...order,
-
-          summary: {
-            totalItems: Number(order.totalItems) || 0,
-
-            totalQuantity: Number(order.totalQuantity) || 0,
-
-            subtotal: round(order.subtotal),
-
-            totalDiscount: round(order.totalDiscount),
-
-            shipping: round(order.shipping),
-            tax: round(order.tax),
-
-            grandTotal: round(order.grandTotal),
-          },
-        },
-      });
-    } catch (error) {
-      console.error("GET /orders/my/:id ERROR:", error?.stack || error);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch order.",
-      });
-    }
-  });
-
-  // ============================================================
-  // CUSTOMER - CANCEL ORDER
-  // PATCH /orders/cancel/:id
-  // ============================================================
-
-  router.patch("/cancel/:id", verifyToken, async (req, res) => {
-    const session = client.startSession();
-
-    try {
-      const email = normalizeEmail(req.user?.email);
-
-      if (!email) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized.",
-        });
-      }
-
-      const { id } = req.params;
-
-      if (!isValidObjectId(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid order ID.",
-        });
-      }
-
-      const orderId = new ObjectId(id);
-
-      let cancelledOrder = null;
-
-      await session.withTransaction(async () => {
-        const order = await ordersCollection.findOne(
-          {
-            _id: orderId,
-            email,
-          },
-          { session },
-        );
 
         if (!order) {
-          throw createRouteError("Order not found.", 404);
+          return res.status(404).json({
+            success: false,
+            message: "Order not found.",
+          });
         }
 
-        if (!CUSTOMER_CANCELLABLE_STATUSES.includes(order.status)) {
-          throw createRouteError("This order can no longer be cancelled.", 400);
-        }
+        return res.status(200).json({
+          success: true,
+          message: "Order fetched successfully.",
 
-        const now = new Date();
+          data: {
+            ...order,
 
-        const timelineEntry = {
-          status: "cancelled",
-          note: "Order cancelled by customer.",
-          createdAt: now,
-        };
-
-        const updateResult = await ordersCollection.updateOne(
-          {
-            _id: orderId,
-            email,
-            status: {
-              $in: CUSTOMER_CANCELLABLE_STATUSES,
-            },
+            summary: buildOrderSummary(order),
           },
-          {
-            $set: {
-              status: "cancelled",
-              updatedAt: now,
-            },
+        });
+      } catch (error) {
+        console.error("GET /orders/my/:id ERROR:", error?.stack || error);
 
-            $push: {
-              timeline: timelineEntry,
-            },
-          },
-          { session },
-        );
+        return res.status(500).json({
+          success: false,
+          message: "Failed to fetch order.",
+        });
+      }
+    },
+  );
 
-        if (updateResult.modifiedCount !== 1) {
-          throw createRouteError("Order could not be cancelled.", 409);
+  // ==========================================================
+  // CUSTOMER - CANCEL ORDER
+  // PATCH /orders/cancel/:id
+  // ==========================================================
+
+  router.patch(
+    "/cancel/:id",
+    verifyToken,
+    verifyUser(usersCollection),
+    async (req, res) => {
+      const session = client.startSession();
+
+      try {
+        const email = normalizeEmail(req.dbUser?.email || req.user?.email);
+
+        if (!email) {
+          return res.status(401).json({
+            success: false,
+            message: "Unauthorized.",
+          });
         }
 
-        // Restore stock.
-        const items = Array.isArray(order.items) ? order.items : [];
+        const orderId = toObjectId(req.params.id);
 
-        for (const item of items) {
-          const quantity = Number(item?.quantity);
+        if (!orderId) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid order ID.",
+          });
+        }
 
-          const productId = toObjectId(item?.productId);
+        let cancelledOrder = null;
 
-          if (!Number.isInteger(quantity) || quantity < 1 || !productId) {
-            continue;
+        await session.withTransaction(async () => {
+          const order = await ordersCollection.findOne(
+            {
+              _id: orderId,
+              email,
+            },
+            { session },
+          );
+
+          if (!order) {
+            throw createRouteError("Order not found.", 404);
           }
 
-          await productsCollection.updateOne(
+          if (!CUSTOMER_CANCELLABLE_STATUSES.includes(order.status)) {
+            throw createRouteError(
+              "This order can no longer be cancelled.",
+              400,
+            );
+          }
+
+          const now = new Date();
+
+          const timelineEntry = {
+            status: "cancelled",
+
+            note: "Order cancelled by customer.",
+
+            createdAt: now,
+          };
+
+          const updateResult = await ordersCollection.updateOne(
             {
-              _id: productId,
+              _id: orderId,
+
+              email,
+
+              status: {
+                $in: CUSTOMER_CANCELLABLE_STATUSES,
+              },
             },
             {
-              $inc: {
-                stock: quantity,
+              $set: {
+                status: "cancelled",
+                updatedAt: now,
               },
 
-              $set: {
-                updatedAt: now,
+              $push: {
+                timeline: timelineEntry,
               },
             },
             { session },
           );
-        }
 
-        cancelledOrder = {
-          ...order,
-          status: "cancelled",
-          updatedAt: now,
+          if (updateResult.modifiedCount !== 1) {
+            throw createRouteError("Order could not be cancelled.", 409);
+          }
 
-          timeline: [
-            ...(Array.isArray(order.timeline) ? order.timeline : []),
+          // ----------------------------------------------
+          // RESTORE STOCK
+          // ----------------------------------------------
 
-            timelineEntry,
-          ],
-        };
-      });
+          const items = Array.isArray(order.items) ? order.items : [];
 
-      return res.status(200).json({
-        success: true,
-        message: "Order cancelled successfully.",
+          for (const item of items) {
+            const quantity = Number(item?.quantity);
 
-        data: {
-          _id: cancelledOrder._id,
-          orderNumber: cancelledOrder.orderNumber,
-          status: cancelledOrder.status,
-          paymentStatus: cancelledOrder.paymentStatus,
-          timeline: cancelledOrder.timeline,
-          updatedAt: cancelledOrder.updatedAt,
-        },
-      });
-    } catch (error) {
-      console.error("PATCH /orders/cancel/:id ERROR:", error?.stack || error);
+            const productId = toObjectId(item?.productId);
 
-      return res.status(getErrorStatusCode(error)).json({
-        success: false,
-        message: error?.message || "Failed to cancel order.",
-      });
-    } finally {
-      await session.endSession();
-    }
-  });
+            if (!Number.isInteger(quantity) || quantity < 1 || !productId) {
+              continue;
+            }
+
+            await productsCollection.updateOne(
+              {
+                _id: productId,
+              },
+              {
+                $inc: {
+                  stock: quantity,
+                },
+
+                $set: {
+                  updatedAt: now,
+                },
+              },
+              { session },
+            );
+          }
+
+          cancelledOrder = {
+            ...order,
+
+            status: "cancelled",
+
+            updatedAt: now,
+
+            timeline: [
+              ...(Array.isArray(order.timeline) ? order.timeline : []),
+
+              timelineEntry,
+            ],
+          };
+        });
+
+        return res.status(200).json({
+          success: true,
+          message: "Order cancelled successfully.",
+
+          data: {
+            _id: cancelledOrder._id,
+
+            orderNumber: cancelledOrder.orderNumber,
+
+            status: cancelledOrder.status,
+
+            paymentStatus: cancelledOrder.paymentStatus,
+
+            timeline: cancelledOrder.timeline,
+
+            updatedAt: cancelledOrder.updatedAt,
+          },
+        });
+      } catch (error) {
+        console.error("PATCH /orders/cancel/:id ERROR:", error?.stack || error);
+
+        return res.status(getErrorStatusCode(error)).json({
+          success: false,
+          message: error?.message || "Failed to cancel order.",
+        });
+      } finally {
+        await session.endSession();
+      }
+    },
+  );
+
+  // ==========================================================
+  // RETURN ROUTER
+  // ==========================================================
 
   return router;
 };
