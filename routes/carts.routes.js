@@ -18,15 +18,19 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
   // ============================================================
 
   const normalizeEmail = (email = "") => {
-    return typeof email === "string" ? email.trim().toLowerCase() : "";
+    if (typeof email !== "string") {
+      return "";
+    }
+
+    return email.trim().toLowerCase();
   };
 
   const getUserEmail = (req) => {
     return normalizeEmail(req.user?.email);
   };
 
-  const isValidObjectId = (id) => {
-    return typeof id === "string" && ObjectId.isValid(id);
+  const isValidObjectId = (value) => {
+    return typeof value === "string" && ObjectId.isValid(value);
   };
 
   const toObjectId = (value) => {
@@ -44,13 +48,19 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
   const round = (value) => {
     const number = Number(value);
 
-    return Number.isFinite(number) ? Number(number.toFixed(2)) : 0;
+    if (!Number.isFinite(number)) {
+      return 0;
+    }
+
+    return Number(number.toFixed(2));
   };
 
   const getProductName = (product) => {
-    return typeof product?.name === "string" && product.name.trim()
-      ? product.name.trim()
-      : "Unknown Product";
+    if (typeof product?.name === "string" && product.name.trim().length > 0) {
+      return product.name.trim();
+    }
+
+    return "Unknown Product";
   };
 
   const getProductImage = (product) => {
@@ -109,28 +119,38 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
   const calculateProductPrice = (product) => {
     const productName = getProductName(product);
 
-    const price = Number(product?.price);
+    const rawPrice = Number(product?.price);
 
-    if (!Number.isFinite(price) || price < 0) {
+    if (!Number.isFinite(rawPrice) || rawPrice < 0) {
       throw new Error(`Invalid price for "${productName}".`);
     }
 
-    const discount = Number(product?.discount ?? 0);
+    const rawDiscount = Number(product?.discount ?? 0);
 
-    if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+    if (!Number.isFinite(rawDiscount) || rawDiscount < 0 || rawDiscount > 100) {
       throw new Error(`Invalid discount for "${productName}".`);
     }
 
-    const safePrice = round(price);
-    const safeDiscount = round(discount);
+    const price = round(rawPrice);
+    const discount = round(rawDiscount);
 
-    const finalPrice = round(safePrice - (safePrice * safeDiscount) / 100);
+    const finalPrice = round(price - (price * discount) / 100);
 
     return {
-      price: safePrice,
-      discount: safeDiscount,
+      price,
+      discount,
       finalPrice,
     };
+  };
+
+  // ============================================================
+  // VALIDATE QUANTITY
+  // ============================================================
+
+  const validateQuantity = (quantity) => {
+    return (
+      Number.isInteger(quantity) && quantity >= 1 && quantity <= MAX_QUANTITY
+    );
   };
 
   // ============================================================
@@ -196,6 +216,20 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
   };
 
   // ============================================================
+  // ERROR MESSAGE HELPER
+  // ============================================================
+
+  const isClientValidationError = (message = "") => {
+    return (
+      message.includes("currently out of stock") ||
+      message.includes("Only ") ||
+      message.includes("Invalid price") ||
+      message.includes("Invalid discount") ||
+      message.includes("Invalid stock")
+    );
+  };
+
+  // ============================================================
   // GET CART
   // GET /carts
   // ============================================================
@@ -213,7 +247,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
       const cartItems = await cartsCollection
         .find(
-          { email },
+          {
+            email,
+          },
           {
             projection: {
               email: 0,
@@ -233,17 +269,13 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         data: cartItems,
         summary: {
           totalItems: Number(summary.totalItems) || 0,
-
           totalQuantity: Number(summary.totalQuantity) || 0,
 
           subtotal: round(summary.subtotal),
-
           totalDiscount: round(summary.totalDiscount),
 
           shipping: round(summary.shipping),
-
           tax: round(summary.tax),
-
           grandTotal: round(summary.grandTotal),
         },
       });
@@ -309,7 +341,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
       const cartItems = await cartsCollection
         .find(
-          { email },
+          {
+            email,
+          },
           {
             projection: {
               price: 1,
@@ -326,17 +360,13 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         success: true,
         data: {
           totalItems: Number(summary.totalItems) || 0,
-
           totalQuantity: Number(summary.totalQuantity) || 0,
 
           subtotal: round(summary.subtotal),
-
           discount: round(summary.totalDiscount),
 
           shipping: round(summary.shipping),
-
           tax: round(summary.tax),
-
           grandTotal: round(summary.grandTotal),
         },
       });
@@ -383,11 +413,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      if (
-        !Number.isInteger(quantity) ||
-        quantity < 1 ||
-        quantity > MAX_QUANTITY
-      ) {
+      if (!validateQuantity(quantity)) {
         return res.status(400).json({
           success: false,
           message: `Quantity must be between 1 and ${MAX_QUANTITY}.`,
@@ -415,7 +441,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
       if (existingItem) {
         const existingQuantity = Number(existingItem.quantity);
 
-        if (!Number.isInteger(existingQuantity) || existingQuantity < 1) {
+        if (!validateQuantity(existingQuantity)) {
           return res.status(409).json({
             success: false,
             message: "Invalid existing cart quantity.",
@@ -441,9 +467,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         existingItem,
       });
 
-      // --------------------------------------------------------
+      // ----------------------------------------------------------
       // UPDATE EXISTING ITEM
-      // --------------------------------------------------------
+      // ----------------------------------------------------------
 
       if (existingItem) {
         const result = await cartsCollection.updateOne(
@@ -471,7 +497,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
           });
         }
 
-        const updated = await cartsCollection.findOne({
+        const updatedItem = await cartsCollection.findOne({
           _id: existingItem._id,
           email,
         });
@@ -479,13 +505,13 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         return res.status(200).json({
           success: true,
           message: "Cart updated successfully.",
-          data: updated,
+          data: updatedItem,
         });
       }
 
-      // --------------------------------------------------------
-      // CHECK MAX CART ITEMS
-      // --------------------------------------------------------
+      // ----------------------------------------------------------
+      // MAX CART ITEMS
+      // ----------------------------------------------------------
 
       const cartCount = await cartsCollection.countDocuments({
         email,
@@ -498,9 +524,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // --------------------------------------------------------
-      // INSERT
-      // --------------------------------------------------------
+      // ----------------------------------------------------------
+      // INSERT NEW ITEM
+      // ----------------------------------------------------------
 
       const result = await cartsCollection.insertOne(cartItem);
 
@@ -529,13 +555,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
       const message = error?.message || "";
 
-      if (
-        message.includes("currently out of stock") ||
-        message.includes("Only ") ||
-        message.includes("Invalid price") ||
-        message.includes("Invalid discount") ||
-        message.includes("Invalid stock")
-      ) {
+      if (isClientValidationError(message)) {
         return res.status(400).json({
           success: false,
           message,
@@ -578,11 +598,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
       const quantity = Number(req.body?.quantity);
 
-      if (
-        !Number.isInteger(quantity) ||
-        quantity < 1 ||
-        quantity > MAX_QUANTITY
-      ) {
+      if (!validateQuantity(quantity)) {
         return res.status(400).json({
           success: false,
           message: `Quantity must be between 1 and ${MAX_QUANTITY}.`,
@@ -623,7 +639,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
       validateStock(product, quantity);
 
-      const updatedItem = buildCartItem({
+      const updatedCartItem = buildCartItem({
         email,
         product,
         quantity,
@@ -636,7 +652,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
           email,
         },
         {
-          $set: updatedItem,
+          $set: updatedCartItem,
         },
       );
 
@@ -667,13 +683,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
     } catch (error) {
       const message = error?.message || "";
 
-      if (
-        message.includes("currently out of stock") ||
-        message.includes("Only ") ||
-        message.includes("Invalid price") ||
-        message.includes("Invalid discount") ||
-        message.includes("Invalid stock")
-      ) {
+      if (isClientValidationError(message)) {
         return res.status(400).json({
           success: false,
           message,
@@ -690,8 +700,71 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
   });
 
   // ============================================================
+  // DELETE CART ITEM
+  // DELETE /carts/:id
+  // ============================================================
+
+  router.delete("/:id", verifyToken, async (req, res) => {
+    try {
+      const email = getUserEmail(req);
+
+      if (!email) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized.",
+        });
+      }
+
+      const { id } = req.params;
+
+      if (!isValidObjectId(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid cart ID.",
+        });
+      }
+
+      const cartId = new ObjectId(id);
+
+      const result = await cartsCollection.deleteOne({
+        _id: cartId,
+        email,
+      });
+
+      if (!result.acknowledged) {
+        return res.status(500).json({
+          success: false,
+          message: "Failed to remove cart item.",
+        });
+      }
+
+      if (result.deletedCount === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Cart item not found.",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Product removed from cart successfully.",
+      });
+    } catch (error) {
+      console.error("DELETE /carts/:id ERROR:", error?.stack || error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to remove cart item.",
+      });
+    }
+  });
+
+  // ============================================================
   // VALIDATE CART
   // POST /carts/validate
+  //
+  // This performs fresh product, stock, price and discount
+  // validation before checkout/order creation.
   // ============================================================
 
   router.post("/validate", verifyToken, async (req, res) => {
@@ -707,7 +780,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
       const cartItems = await cartsCollection
         .find(
-          { email },
+          {
+            email,
+          },
           {
             projection: {
               _id: 1,
@@ -741,9 +816,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
       const productIdSet = new Set();
       const errors = [];
 
-      // --------------------------------------------------------
-      // VALIDATE CART REFERENCES
-      // --------------------------------------------------------
+      // ----------------------------------------------------------
+      // VALIDATE PRODUCT REFERENCES
+      // ----------------------------------------------------------
 
       for (const item of cartItems) {
         const productId = toObjectId(item?.productId);
@@ -782,9 +857,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      // --------------------------------------------------------
+      // ----------------------------------------------------------
       // LOAD CURRENT PRODUCTS
-      // --------------------------------------------------------
+      // ----------------------------------------------------------
 
       const products = await productsCollection
         .find(
@@ -805,9 +880,9 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
       const validatedItems = [];
 
-      // --------------------------------------------------------
-      // VALIDATE EACH ITEM
-      // --------------------------------------------------------
+      // ----------------------------------------------------------
+      // VALIDATE EACH CART ITEM
+      // ----------------------------------------------------------
 
       for (const cartItem of cartItems) {
         const productId = toObjectId(cartItem.productId);
@@ -828,11 +903,7 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
         const quantity = Number(cartItem.quantity);
 
-        if (
-          !Number.isInteger(quantity) ||
-          quantity < 1 ||
-          quantity > MAX_QUANTITY
-        ) {
+        if (!validateQuantity(quantity)) {
           errors.push({
             cartId: cartItem._id,
             productId: product._id,
@@ -876,34 +947,29 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
 
         validatedItems.push({
           cartId: cartItem._id,
-
           productId: product._id,
 
           sku: getProductSku(product),
-
           name: productName,
-
           image: getProductImage(product),
-
           brand: getProductBrand(product),
-
           category: getProductCategory(product),
-
-          weight: product.weight ?? null,
+          weight: product?.weight ?? null,
 
           quantity,
 
           price: pricing.price,
-
           discount: pricing.discount,
-
           finalPrice: pricing.finalPrice,
 
           subtotal,
-
           discountAmount,
         });
       }
+
+      // ----------------------------------------------------------
+      // VALIDATION ERRORS
+      // ----------------------------------------------------------
 
       if (errors.length > 0) {
         return res.status(400).json({
@@ -920,29 +986,34 @@ const cartsRoutes = (cartsCollection, productsCollection, verifyToken) => {
         });
       }
 
-      const calculatedSummary = calculateOrderSummary(validatedItems);
+      // ----------------------------------------------------------
+      // CALCULATE FRESH SUMMARY
+      // ----------------------------------------------------------
+
+      const summary = calculateOrderSummary(validatedItems);
 
       return res.status(200).json({
         success: true,
         message: "Cart validated successfully.",
+
         data: {
           items: validatedItems,
 
-          totalItems: Number(calculatedSummary.totalItems) || 0,
+          totalItems: Number(summary.totalItems) || 0,
 
-          totalQuantity: Number(calculatedSummary.totalQuantity) || 0,
+          totalQuantity: Number(summary.totalQuantity) || 0,
 
-          subtotal: round(calculatedSummary.subtotal),
+          subtotal: round(summary.subtotal),
 
-          discount: round(calculatedSummary.totalDiscount),
+          discount: round(summary.totalDiscount),
 
-          totalDiscount: round(calculatedSummary.totalDiscount),
+          totalDiscount: round(summary.totalDiscount),
 
-          shipping: round(calculatedSummary.shipping),
+          shipping: round(summary.shipping),
 
-          tax: round(calculatedSummary.tax),
+          tax: round(summary.tax),
 
-          grandTotal: round(calculatedSummary.grandTotal),
+          grandTotal: round(summary.grandTotal),
         },
       });
     } catch (error) {
