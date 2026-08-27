@@ -69,12 +69,14 @@ const getInvoice = async (ordersCollection, orderId, email) => {
   if (!cleanOrderId) {
     const error = new Error("Invalid Order ID");
     error.code = "invoice/invalid-order-id";
+
     throw error;
   }
 
   if (!cleanEmail) {
     const error = new Error("Unauthorized");
     error.code = "auth/unauthorized";
+
     throw error;
   }
 
@@ -83,6 +85,7 @@ const getInvoice = async (ordersCollection, orderId, email) => {
   if (!result?.invoice) {
     const error = new Error("Order not found");
     error.code = "invoice/not-found";
+
     throw error;
   }
 
@@ -106,7 +109,7 @@ const createInvoicePdf = (invoice) => {
       Author: shopName,
       Subject: "Customer Invoice",
       Creator: shopName,
-      Producer: "Biscuit Shop Invoice System",
+      Producer: `${shopName} Invoice System`,
     },
   });
 };
@@ -133,8 +136,6 @@ const renderInvoicePdf = (doc, invoice) => {
 
 const sendInvoicePdf = (res, invoice, mode = "inline") => {
   const invoiceNumber = sanitizeFilename(invoice?.invoiceNumber) || "invoice";
-
-  const shopName = normalizeString(invoice?.shop?.name) || "Biscuit Shop";
 
   const doc = createInvoicePdf(invoice);
 
@@ -194,24 +195,19 @@ const handleInvoiceError = (res, error, fallbackMessage) => {
     return;
   }
 
-  switch (error?.message) {
-    case "Invalid Order ID":
-      return sendError(
-        res,
-        400,
-        "invoice/invalid-order-id",
-        "Invalid order ID.",
-      );
-
-    case "Unauthorized":
-      return sendError(res, 401, "auth/unauthorized", "Unauthorized access.");
-
-    case "Order not found":
-      return sendError(res, 404, "invoice/not-found", "Invoice was not found.");
-
-    default:
-      return sendError(res, 500, "invoice/server-error", fallbackMessage);
+  if (error?.message === "Invalid Order ID") {
+    return sendError(res, 400, "invoice/invalid-order-id", "Invalid order ID.");
   }
+
+  if (error?.message === "Unauthorized") {
+    return sendError(res, 401, "auth/unauthorized", "Unauthorized access.");
+  }
+
+  if (error?.message === "Order not found") {
+    return sendError(res, 404, "invoice/not-found", "Invoice was not found.");
+  }
+
+  return sendError(res, 500, "invoice/server-error", fallbackMessage);
 };
 
 // ============================================================
@@ -222,7 +218,8 @@ const invoiceRoutes = (ordersCollection, verifyToken) => {
   const router = Router();
 
   // ==========================================================
-  // GET INVOICE PDF - DOWNLOAD
+  // GET INVOICE PDF
+  // DOWNLOAD
   //
   // GET /invoices/pdf/:id
   // ==========================================================
@@ -242,7 +239,8 @@ const invoiceRoutes = (ordersCollection, verifyToken) => {
   });
 
   // ==========================================================
-  // GET INVOICE PDF - VIEW
+  // GET INVOICE PDF
+  // VIEW
   //
   // GET /invoices/view/:id
   // ==========================================================

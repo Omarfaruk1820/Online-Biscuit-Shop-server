@@ -857,47 +857,174 @@ const ordersRoutes = (
   // This route MUST be before GET /:id.
   // Otherwise "my" will be treated as an order ID.
   // ============================================================
+router.get(
+  "/my",
+  verifyToken,
+  verifyUser(usersCollection),
+  async (req, res) => {
+    try {
+      // ============================================================
+      // AUTHENTICATED USER
+      // ============================================================
 
-  router.get(
-    "/my",
-    verifyToken,
-    verifyUser(usersCollection),
-    async (req, res) => {
-      try {
-        const email = normalizeEmail(req.dbUser?.email || req.user?.email);
+      const email = normalizeEmail(
+        req.dbUser?.email || req.user?.email,
+      );
 
-        if (!email) {
-          return res.status(401).json({
+      if (!email) {
+        return res.status(401).json({
+          success: false,
+          code: "auth/email-missing",
+          message: "Unauthorized: User email is unavailable.",
+        });
+      }
+
+      // ============================================================
+      // QUERY PARAMETERS
+      // ============================================================
+
+      const page = Math.max(
+        Number.parseInt(req.query.page, 10) || 1,
+        1,
+      );
+
+      const limit = Math.min(
+        Math.max(
+          Number.parseInt(req.query.limit, 10) || 5,
+          1,
+        ),
+        50,
+      );
+
+      const status = normalizeString(
+        req.query.status,
+      ).toLowerCase();
+
+      const sort = normalizeString(
+        req.query.sort,
+      ).toLowerCase();
+
+      // ============================================================
+      // ALL USER ORDERS COUNT
+      // ============================================================
+
+      const totalOrders = await ordersCollection.countDocuments({
+        email,
+      });
+
+      // ============================================================
+      // FILTER
+      // ============================================================
+
+      const filter = {
+        email,
+      };
+
+      const allowedStatuses = [
+        "pending",
+        "confirmed",
+        "processing",
+        "shipped",
+        "delivered",
+        "cancelled",
+      ];
+
+      if (status && status !== "all") {
+        if (!allowedStatuses.includes(status)) {
+          return res.status(400).json({
             success: false,
-            code: "auth/email-missing",
-            message: "Unauthorized: User email is unavailable.",
+            code: "orders/invalid-status",
+            message: "Invalid order status.",
           });
         }
 
-        const orders = await ordersCollection
-          .find({ email })
-          .sort({
-            createdAt: -1,
-          })
-          .toArray();
-
-        return res.status(200).json({
-          success: true,
-          message: "Your orders fetched successfully.",
-          data: orders,
-          total: orders.length,
-        });
-      } catch (error) {
-        console.error("GET /orders/my ERROR:", error?.stack || error);
-
-        return res.status(500).json({
-          success: false,
-          code: "orders/fetch-failed",
-          message: "Failed to fetch your orders.",
-        });
+        filter.status = status;
       }
-    },
-  );
+
+      // ============================================================
+      // FILTERED ORDER COUNT
+      // ============================================================
+
+      const filteredOrders =
+        await ordersCollection.countDocuments(filter);
+
+      const totalPages =
+        filteredOrders > 0
+          ? Math.ceil(filteredOrders / limit)
+          : 0;
+
+      const currentPage =
+        totalPages > 0
+          ? Math.min(page, totalPages)
+          : 1;
+
+      const skip =
+        (currentPage - 1) * limit;
+
+      // ============================================================
+      // SORT
+      // ============================================================
+
+      const sortDirection =
+        sort === "oldest" ? 1 : -1;
+
+      // ============================================================
+      // FETCH ORDERS
+      // ============================================================
+
+      const orders = await ordersCollection
+        .find(filter)
+        .sort({
+          createdAt: sortDirection,
+        })
+        .skip(skip)
+        .limit(limit)
+        .toArray();
+
+      // ============================================================
+      // RESPONSE
+      // ============================================================
+
+      return res.status(200).json({
+        success: true,
+        code: "orders/fetched",
+        message: "Your orders fetched successfully.",
+
+        data: orders,
+
+        pagination: {
+          page: currentPage,
+          limit,
+
+          // All orders of this user
+          totalOrders,
+
+          // Orders after status filtering
+          filteredOrders,
+
+          totalPages,
+
+          hasNextPage:
+            currentPage < totalPages,
+
+          hasPrevPage:
+            currentPage > 1,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "GET /orders/my ERROR:",
+        error?.stack || error,
+      );
+
+      return res.status(500).json({
+        success: false,
+        code: "orders/fetch-failed",
+        message: "Failed to fetch your orders.",
+      });
+    }
+  },
+);
 
   // ============================================================
   // CUSTOMER - GET SINGLE MY ORDER

@@ -48,7 +48,7 @@ const formatDate = (value) => {
 const drawCompanyHeader = (doc, invoice) => {
   const shop = invoice?.shop || {};
 
-  const companyName = safeText(shop.name, "Your Store");
+  const companyName = safeText(shop.name, "Mamun Biscuit Shop");
   const slogan = safeText(shop.slogan, "");
 
   const address = "Kumarkhali Rail Station Road";
