@@ -92,7 +92,7 @@ const ordersRoutes = (
   const MAX_ITEM_QUANTITY = 99;
 
   // ============================================================
-  // HELPERS
+  // BASIC HELPERS
   // ============================================================
 
   const normalizeString = (value = "", maxLength = 200) => {
@@ -137,7 +137,6 @@ const ordersRoutes = (
 
   const createRouteError = (message, statusCode = 500) => {
     const error = new Error(message);
-
     error.statusCode = statusCode;
 
     return error;
@@ -353,31 +352,31 @@ const ordersRoutes = (
     }
 
     return items.map((item) => ({
-      productId: item.productId,
+      productId: item?.productId,
 
-      sku: normalizeString(item.sku, 100),
+      sku: normalizeString(item?.sku, 100),
 
-      name: normalizeString(item.name, 200),
+      name: normalizeString(item?.name || "Unknown Product", 200),
 
-      image: normalizeString(item.image, 1000),
+      image: normalizeString(item?.image, 1000),
 
-      brand: normalizeString(item.brand, 100),
+      brand: normalizeString(item?.brand, 100),
 
-      category: normalizeString(item.category, 100),
+      category: normalizeString(item?.category, 100),
 
-      weight: item.weight ?? null,
+      weight: item?.weight ?? null,
 
-      quantity: Number(item.quantity) || 0,
+      quantity: Number(item?.quantity) || 0,
 
-      price: round(item.price),
+      price: round(item?.price),
 
-      discount: round(item.discount),
+      discount: round(item?.discount),
 
-      finalPrice: round(item.finalPrice),
+      finalPrice: round(item?.finalPrice),
 
-      subtotal: round(item.subtotal),
+      subtotal: round(item?.subtotal),
 
-      discountAmount: round(item.discountAmount),
+      discountAmount: round(item?.discountAmount),
     }));
   };
 
@@ -426,7 +425,7 @@ const ordersRoutes = (
   };
 
   // ============================================================
-  // STATUS TRANSITION
+  // STATUS HELPERS
   // ============================================================
 
   const getTransitionError = (currentStatus, nextStatus) => {
@@ -462,7 +461,7 @@ const ordersRoutes = (
   };
 
   // ============================================================
-  // TRACKING HELPERS
+  // TRACKING
   // ============================================================
 
   const getTrackingSteps = (currentStatus) => {
@@ -501,53 +500,116 @@ const ordersRoutes = (
     }));
   };
 
-  const buildTrackingData = (order) => {
+  // ============================================================
+  // FULL ORDER RESPONSE
+  // ============================================================
+
+  const buildOrderResponse = (order) => {
+    const summary = buildOrderSummary(order);
+
     const status = order?.status || "pending";
+
+    const items = Array.isArray(order?.items)
+      ? normalizeOrderItems(order.items)
+      : [];
+
+    const customer = order?.customer
+      ? {
+          name: order.customer.name || "",
+          phone: order.customer.phone || "",
+          address: order.customer.address || "",
+          city: order.customer.city || "",
+          area: order.customer.area || "",
+          note: order.customer.note || "",
+        }
+      : null;
 
     return {
       _id: order?._id,
-
       orderNumber: order?.orderNumber || null,
+      email: order?.email || "",
+
+      customer,
+      items,
+
+      totalItems: summary.totalItems,
+      totalQuantity: summary.totalQuantity,
+
+      subtotal: summary.subtotal,
+      totalDiscount: summary.totalDiscount,
+      shipping: summary.shipping,
+      tax: summary.tax,
+      grandTotal: summary.grandTotal,
+
+      summary,
+
+      paymentMethod: order?.paymentMethod || null,
+      paymentStatus: order?.paymentStatus || "pending",
 
       status,
 
-      paymentStatus: order?.paymentStatus || "pending",
-
-      paymentMethod: order?.paymentMethod || null,
-
-      customer: order?.customer
-        ? {
-            name: order.customer.name || "",
-            phone: order.customer.phone || "",
-            address: order.customer.address || "",
-            city: order.customer.city || "",
-            area: order.customer.area || "",
-            note: order.customer.note || "",
-          }
-        : null,
-
-      items: Array.isArray(order?.items) ? order.items : [],
-
-      summary: buildOrderSummary(order),
-
       tracking: {
         isCancelled: status === "cancelled",
-
         isCompleted: status === "delivered",
-
         steps: getTrackingSteps(status),
-
         timeline: buildTrackingTimeline(order?.timeline),
       },
 
       createdAt: order?.createdAt || null,
-
       updatedAt: order?.updatedAt || null,
     };
   };
 
   // ============================================================
-  // CUSTOMER - CREATE ORDER
+  // RESTORE ORDER STOCK
+  // ============================================================
+
+  const restoreOrderStock = async (order, session, now) => {
+    const items = Array.isArray(order?.items) ? order.items : [];
+
+    for (const item of items) {
+      const quantity = Number(item?.quantity);
+
+      const productId = toObjectId(item?.productId);
+
+      if (!Number.isInteger(quantity) || quantity < 1 || !productId) {
+        throw createRouteError(
+          "Order contains invalid product information. Stock could not be restored.",
+          500,
+        );
+      }
+
+      const result = await productsCollection.updateOne(
+        {
+          _id: productId,
+        },
+
+        {
+          $inc: {
+            stock: quantity,
+          },
+
+          $set: {
+            updatedAt: now,
+          },
+        },
+
+        {
+          session,
+        },
+      );
+
+      if (!result.acknowledged || result.modifiedCount !== 1) {
+        throw createRouteError(
+          `Failed to restore stock for "${getProductName(item)}".`,
+          500,
+        );
+      }
+    }
+  };
+
+  // ============================================================
+  // CREATE ORDER
   // POST /orders
   // ============================================================
 
@@ -560,7 +622,9 @@ const ordersRoutes = (
       if (!email) {
         return res.status(401).json({
           success: false,
+
           code: "auth/email-missing",
+
           message: "Unauthorized.",
         });
       }
@@ -572,6 +636,7 @@ const ordersRoutes = (
       if (customerError) {
         return res.status(400).json({
           success: false,
+
           message: customerError,
         });
       }
@@ -581,6 +646,9 @@ const ordersRoutes = (
       if (!paymentMethod) {
         return res.status(400).json({
           success: false,
+
+          code: "orders/invalid-payment-method",
+
           message: "Invalid payment method.",
         });
       }
@@ -588,9 +656,9 @@ const ordersRoutes = (
       let createdOrder = null;
 
       await session.withTransaction(async () => {
-        // --------------------------------------------------------
+        // ------------------------------------------------------
         // LOAD CART
-        // --------------------------------------------------------
+        // ------------------------------------------------------
 
         const cartItems = await cartsCollection
           .find(
@@ -620,12 +688,11 @@ const ordersRoutes = (
           throw createRouteError("Cart contains too many products.", 400);
         }
 
-        // --------------------------------------------------------
+        // ------------------------------------------------------
         // NORMALIZE CART
-        // --------------------------------------------------------
+        // ------------------------------------------------------
 
         const productIds = [];
-
         const cartMap = new Map();
 
         for (const cartItem of cartItems) {
@@ -662,9 +729,9 @@ const ordersRoutes = (
           productIds.push(productId);
         }
 
-        // --------------------------------------------------------
-        // LOAD PRODUCTS
-        // --------------------------------------------------------
+        // ------------------------------------------------------
+        // LOAD CURRENT PRODUCTS
+        // ------------------------------------------------------
 
         const products = await productsCollection
           .find(
@@ -675,6 +742,7 @@ const ordersRoutes = (
             },
             {
               projection: PRODUCT_PROJECTION,
+
               session,
             },
           )
@@ -691,9 +759,9 @@ const ordersRoutes = (
           );
         }
 
-        // --------------------------------------------------------
+        // ------------------------------------------------------
         // BUILD ORDER ITEMS
-        // --------------------------------------------------------
+        // ------------------------------------------------------
 
         const orderItems = [];
 
@@ -750,23 +818,23 @@ const ordersRoutes = (
           });
         }
 
-        // --------------------------------------------------------
+        // ------------------------------------------------------
         // CALCULATE SUMMARY
-        // --------------------------------------------------------
+        // ------------------------------------------------------
 
         const summary = calculateOrderSummary(orderItems);
 
-        // --------------------------------------------------------
-        // ORDER NUMBER
-        // --------------------------------------------------------
+        // ------------------------------------------------------
+        // CREATE ORDER NUMBER
+        // ------------------------------------------------------
 
         const orderNumber = await createUniqueOrderNumber(session);
 
         const now = new Date();
 
-        // --------------------------------------------------------
+        // ------------------------------------------------------
         // DECREASE STOCK
-        // --------------------------------------------------------
+        // ------------------------------------------------------
 
         for (const item of orderItems) {
           const result = await productsCollection.updateOne(
@@ -801,9 +869,9 @@ const ordersRoutes = (
           }
         }
 
-        // --------------------------------------------------------
+        // ------------------------------------------------------
         // ORDER DOCUMENT
-        // --------------------------------------------------------
+        // ------------------------------------------------------
 
         const orderDocument = {
           orderNumber,
@@ -849,9 +917,9 @@ const ordersRoutes = (
           updatedAt: now,
         };
 
-        // --------------------------------------------------------
+        // ------------------------------------------------------
         // INSERT ORDER
-        // --------------------------------------------------------
+        // ------------------------------------------------------
 
         const insertResult = await ordersCollection.insertOne(orderDocument, {
           session,
@@ -861,9 +929,9 @@ const ordersRoutes = (
           throw createRouteError("Failed to create order.", 500);
         }
 
-        // --------------------------------------------------------
+        // ------------------------------------------------------
         // CLEAR CART
-        // --------------------------------------------------------
+        // ------------------------------------------------------
 
         const deleteResult = await cartsCollection.deleteMany(
           {
@@ -890,13 +958,15 @@ const ordersRoutes = (
 
         message: "Order placed successfully.",
 
-        data: createdOrder,
+        data: buildOrderResponse(createdOrder),
       });
     } catch (error) {
       console.error("POST /orders ERROR:", error?.stack || error);
 
       return res.status(getErrorStatusCode(error)).json({
         success: false,
+
+        code: "orders/create-failed",
 
         message:
           error?.code === 11000
@@ -909,7 +979,8 @@ const ordersRoutes = (
   });
 
   // ============================================================
-  // ADMIN - ORDER STATISTICS
+  // ADMIN
+  // ORDER STATISTICS
   // GET /orders/stats
   // ============================================================
 
@@ -1012,6 +1083,8 @@ const ordersRoutes = (
         return res.status(500).json({
           success: false,
 
+          code: "orders/stats-failed",
+
           message: "Failed to fetch order statistics.",
         });
       }
@@ -1019,7 +1092,8 @@ const ordersRoutes = (
   );
 
   // ============================================================
-  // CUSTOMER - MY ORDERS
+  // CUSTOMER
+  // MY ORDERS
   // GET /orders/my
   // ============================================================
 
@@ -1071,11 +1145,13 @@ const ordersRoutes = (
           filter.status = status;
         }
 
-        const totalOrders = await ordersCollection.countDocuments({
-          email,
-        });
+        const [totalOrders, filteredOrders] = await Promise.all([
+          ordersCollection.countDocuments({
+            email,
+          }),
 
-        const filteredOrders = await ordersCollection.countDocuments(filter);
+          ordersCollection.countDocuments(filter),
+        ]);
 
         const totalPages =
           filteredOrders > 0 ? Math.ceil(filteredOrders / limit) : 0;
@@ -1089,7 +1165,6 @@ const ordersRoutes = (
         const orders = await ordersCollection
           .find(filter, {
             projection: {
-              items: 0,
               timeline: 0,
             },
           })
@@ -1100,6 +1175,8 @@ const ordersRoutes = (
           .limit(limit)
           .toArray();
 
+        const formattedOrders = orders.map(buildOrderResponse);
+
         return res.status(200).json({
           success: true,
 
@@ -1107,7 +1184,7 @@ const ordersRoutes = (
 
           message: "Your orders fetched successfully.",
 
-          data: orders,
+          data: formattedOrders,
 
           pagination: {
             page: currentPage,
@@ -1140,7 +1217,8 @@ const ordersRoutes = (
   );
 
   // ============================================================
-  // CUSTOMER - TRACK ORDER BY ORDER NUMBER
+  // CUSTOMER
+  // TRACK ORDER
   // GET /orders/my/track/:orderNumber
   // ============================================================
 
@@ -1200,7 +1278,7 @@ const ordersRoutes = (
 
           message: "Order tracking information fetched successfully.",
 
-          data: buildTrackingData(order),
+          data: buildOrderResponse(order),
         });
       } catch (error) {
         console.error(
@@ -1220,7 +1298,8 @@ const ordersRoutes = (
   );
 
   // ============================================================
-  // CUSTOMER - ORDER DETAILS / TRACKING BY ID
+  // CUSTOMER
+  // ORDER DETAILS
   // GET /orders/my/:id
   // ============================================================
 
@@ -1229,64 +1308,81 @@ const ordersRoutes = (
     verifyToken,
     verifyUser(usersCollection),
     async (req, res) => {
+      console.log("🔥 GET /orders/my/:id HIT");
+
       try {
+        console.log("=========================================");
+        console.log("GET /orders/my/:id HIT");
+        console.log("PARAM ID:", req.params.id);
+        console.log("USER EMAIL:", req.dbUser?.email || req.user?.email);
+
         const email = normalizeEmail(req.dbUser?.email || req.user?.email);
 
         if (!email) {
           return res.status(401).json({
             success: false,
-
             code: "auth/email-missing",
-
             message: "Unauthorized.",
           });
         }
 
         const orderId = toObjectId(req.params.id);
 
+        console.log("ORDER OBJECT ID:", orderId);
+
         if (!orderId) {
           return res.status(400).json({
             success: false,
-
             code: "orders/invalid-id",
-
             message: "Invalid order ID.",
           });
         }
 
         const order = await ordersCollection.findOne({
           _id: orderId,
-
           email,
         });
+
+        console.log("========== ORDER FROM DATABASE ==========");
+        console.log("subtotal:", order?.subtotal);
+        console.log("totalDiscount:", order?.totalDiscount);
+        console.log("shipping:", order?.shipping);
+        console.log("tax:", order?.tax);
+        console.log("grandTotal:", order?.grandTotal);
+        console.log("FULL ORDER:", order);
+        console.log("=========================================");
 
         if (!order) {
           return res.status(404).json({
             success: false,
-
             code: "orders/not-found",
-
             message: "Order not found.",
           });
         }
 
+        const responseData = buildOrderResponse(order);
+
+        console.log("========== ORDER RESPONSE ==========");
+        console.log("subtotal:", responseData?.subtotal);
+        console.log("totalDiscount:", responseData?.totalDiscount);
+        console.log("shipping:", responseData?.shipping);
+        console.log("tax:", responseData?.tax);
+        console.log("grandTotal:", responseData?.grandTotal);
+        console.log("SUMMARY:", responseData?.summary);
+        console.log("====================================");
+
         return res.status(200).json({
           success: true,
-
-          code: "orders/tracking-fetched",
-
-          message: "Order tracking information fetched successfully.",
-
-          data: buildTrackingData(order),
+          code: "orders/details-fetched",
+          message: "Order details fetched successfully.",
+          data: responseData,
         });
       } catch (error) {
         console.error("GET /orders/my/:id ERROR:", error?.stack || error);
 
         return res.status(500).json({
           success: false,
-
           code: "orders/fetch-failed",
-
           message: "Failed to fetch order.",
         });
       }
@@ -1294,7 +1390,8 @@ const ordersRoutes = (
   );
 
   // ============================================================
-  // ADMIN - ALL ORDERS
+  // ADMIN
+  // ALL ORDERS
   // GET /orders
   // ============================================================
 
@@ -1400,7 +1497,8 @@ const ordersRoutes = (
   );
 
   // ============================================================
-  // ADMIN - ORDER DETAILS
+  // ADMIN
+  // ORDER DETAILS
   // GET /orders/:id
   // ============================================================
 
@@ -1442,7 +1540,7 @@ const ordersRoutes = (
 
           message: "Order fetched successfully.",
 
-          data: buildTrackingData(order),
+          data: buildOrderResponse(order),
         });
       } catch (error) {
         console.error("GET /orders/:id ERROR:", error?.stack || error);
@@ -1459,7 +1557,8 @@ const ordersRoutes = (
   );
 
   // ============================================================
-  // ADMIN - UPDATE ORDER STATUS
+  // ADMIN
+  // UPDATE ORDER STATUS
   // PATCH /orders/status/:id
   // ============================================================
 
@@ -1537,6 +1636,18 @@ const ordersRoutes = (
             createdAt: now,
           };
 
+          // --------------------------------------------------
+          // RESTORE STOCK WHEN ADMIN CANCELS ORDER
+          // --------------------------------------------------
+
+          if (nextStatus === "cancelled" && order.status !== "cancelled") {
+            await restoreOrderStock(order, session, now);
+          }
+
+          // --------------------------------------------------
+          // UPDATE ORDER
+          // --------------------------------------------------
+
           const updateResult = await ordersCollection.updateOne(
             {
               _id: orderId,
@@ -1561,7 +1672,7 @@ const ordersRoutes = (
             },
           );
 
-          if (updateResult.modifiedCount !== 1) {
+          if (!updateResult.acknowledged || updateResult.modifiedCount !== 1) {
             throw createRouteError("Order status could not be updated.", 409);
           }
 
@@ -1585,27 +1696,7 @@ const ordersRoutes = (
 
           message: "Order status updated successfully.",
 
-          data: {
-            _id: updatedOrder._id,
-
-            orderNumber: updatedOrder.orderNumber,
-
-            status: updatedOrder.status,
-
-            paymentStatus: updatedOrder.paymentStatus,
-
-            tracking: {
-              steps: getTrackingSteps(updatedOrder.status),
-
-              timeline: buildTrackingTimeline(updatedOrder.timeline),
-
-              isCancelled: updatedOrder.status === "cancelled",
-
-              isCompleted: updatedOrder.status === "delivered",
-            },
-
-            updatedAt: updatedOrder.updatedAt,
-          },
+          data: buildOrderResponse(updatedOrder),
         });
       } catch (error) {
         console.error("PATCH /orders/status/:id ERROR:", error?.stack || error);
@@ -1624,7 +1715,8 @@ const ordersRoutes = (
   );
 
   // ============================================================
-  // ADMIN - UPDATE PAYMENT STATUS
+  // ADMIN
+  // UPDATE PAYMENT STATUS
   // PATCH /orders/payment-status/:id
   // ============================================================
 
@@ -1675,7 +1767,7 @@ const ordersRoutes = (
           },
         );
 
-        if (updateResult.matchedCount !== 1) {
+        if (!updateResult.acknowledged || updateResult.matchedCount !== 1) {
           return res.status(404).json({
             success: false,
 
@@ -1685,32 +1777,16 @@ const ordersRoutes = (
           });
         }
 
-        const updatedOrder = await ordersCollection.findOne(
-          {
-            _id: orderId,
-          },
-
-          {
-            projection: {
-              _id: 1,
-
-              orderNumber: 1,
-
-              paymentStatus: 1,
-
-              status: 1,
-
-              updatedAt: 1,
-            },
-          },
-        );
+        const updatedOrder = await ordersCollection.findOne({
+          _id: orderId,
+        });
 
         return res.status(200).json({
           success: true,
 
           message: "Payment status updated successfully.",
 
-          data: updatedOrder,
+          data: buildOrderResponse(updatedOrder),
         });
       } catch (error) {
         console.error(
@@ -1730,7 +1806,8 @@ const ordersRoutes = (
   );
 
   // ============================================================
-  // CUSTOMER - CANCEL ORDER
+  // CUSTOMER
+  // CANCEL ORDER
   // PATCH /orders/cancel/:id
   // ============================================================
 
@@ -1801,6 +1878,10 @@ const ordersRoutes = (
             createdAt: now,
           };
 
+          // --------------------------------------------------
+          // UPDATE ORDER
+          // --------------------------------------------------
+
           const updateResult = await ordersCollection.updateOne(
             {
               _id: orderId,
@@ -1829,49 +1910,15 @@ const ordersRoutes = (
             },
           );
 
-          if (updateResult.modifiedCount !== 1) {
+          if (!updateResult.acknowledged || updateResult.modifiedCount !== 1) {
             throw createRouteError("Order could not be cancelled.", 409);
           }
 
-          // ----------------------------------------------------
+          // --------------------------------------------------
           // RESTORE STOCK
-          // ----------------------------------------------------
+          // --------------------------------------------------
 
-          const items = Array.isArray(order.items) ? order.items : [];
-
-          for (const item of items) {
-            const quantity = Number(item?.quantity);
-
-            const productId = toObjectId(item?.productId);
-
-            if (!Number.isInteger(quantity) || quantity < 1 || !productId) {
-              continue;
-            }
-
-            const result = await productsCollection.updateOne(
-              {
-                _id: productId,
-              },
-
-              {
-                $inc: {
-                  stock: quantity,
-                },
-
-                $set: {
-                  updatedAt: now,
-                },
-              },
-
-              {
-                session,
-              },
-            );
-
-            if (!result.acknowledged) {
-              throw createRouteError("Failed to restore product stock.", 500);
-            }
-          }
+          await restoreOrderStock(order, session, now);
 
           cancelledOrder = {
             ...order,
@@ -1893,27 +1940,7 @@ const ordersRoutes = (
 
           message: "Order cancelled successfully.",
 
-          data: {
-            _id: cancelledOrder._id,
-
-            orderNumber: cancelledOrder.orderNumber,
-
-            status: cancelledOrder.status,
-
-            paymentStatus: cancelledOrder.paymentStatus,
-
-            tracking: {
-              steps: getTrackingSteps("cancelled"),
-
-              timeline: buildTrackingTimeline(cancelledOrder.timeline),
-
-              isCancelled: true,
-
-              isCompleted: false,
-            },
-
-            updatedAt: cancelledOrder.updatedAt,
-          },
+          data: buildOrderResponse(cancelledOrder),
         });
       } catch (error) {
         console.error("PATCH /orders/cancel/:id ERROR:", error?.stack || error);
