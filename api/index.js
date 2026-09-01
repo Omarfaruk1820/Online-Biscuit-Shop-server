@@ -11,6 +11,7 @@ import { MongoClient, ServerApiVersion } from "mongodb";
 
 import authRoutes from "../routes/auth.routes.js";
 import usersRoutes from "../routes/users.routes.js";
+import aiRoutes from "../routes/ai.routes.js";
 import productsRoutes from "../routes/products.routes.js";
 import cartsRoutes from "../routes/carts.routes.js";
 import ordersRoutes from "../routes/orders.routes.js";
@@ -323,6 +324,9 @@ const mountRoutes = () => {
   // ==========================================================
   // AUTH
   // ==========================================================
+  // ==========================================================
+  // AUTH
+  // ==========================================================
 
   app.use("/auth", authRoutes(usersCollection));
 
@@ -331,6 +335,12 @@ const mountRoutes = () => {
   // ==========================================================
 
   app.use("/users", usersRoutes(usersCollection));
+
+  // ==========================================================
+  // AI
+  // ==========================================================
+
+app.use("/api/ai", aiRoutes);
 
   // ==========================================================
   // PRODUCTS
@@ -350,6 +360,7 @@ const mountRoutes = () => {
   // ==========================================================
   // CARTS
   // ==========================================================
+
   app.use(
     "/carts",
     cartsRoutes(cartsCollection, productsCollection, verifyToken),
@@ -358,8 +369,6 @@ const mountRoutes = () => {
   // ==========================================================
   // ORDERS
   // ==========================================================
-
-
 
   app.use(
     "/orders",
@@ -371,6 +380,10 @@ const mountRoutes = () => {
       usersCollection,
     ),
   );
+
+  // ==========================================================
+  // ADMIN
+  // ==========================================================
 
   app.use(
     "/admin",
