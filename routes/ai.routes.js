@@ -9,13 +9,11 @@ const router = express.Router();
 
 const apiKey = process.env.AI_API_KEY;
 
-if (!apiKey) {
-  throw new Error("AI_API_KEY is missing from environment variables.");
-}
-
-const openai = new OpenAI({
-  apiKey,
-});
+const openai = apiKey
+  ? new OpenAI({
+      apiKey,
+    })
+  : null;
 
 // ============================================================
 // AI CHAT
@@ -24,7 +22,24 @@ const openai = new OpenAI({
 
 router.post("/chat", async (req, res) => {
   try {
-    const { message } = req.body;
+    // ============================================================
+    // CHECK OPENAI CONFIGURATION
+    // ============================================================
+
+    if (!openai) {
+      console.error("AI_API_KEY is missing from environment variables.");
+
+      return res.status(500).json({
+        success: false,
+        message: "AI service is not configured correctly.",
+      });
+    }
+
+    // ============================================================
+    // VALIDATE REQUEST
+    // ============================================================
+
+    const message = req.body?.message;
 
     if (typeof message !== "string" || !message.trim()) {
       return res.status(400).json({
@@ -32,8 +47,14 @@ router.post("/chat", async (req, res) => {
         message: "Message is required.",
       });
     }
+
+    // ============================================================
+    // OPENAI REQUEST
+    // ============================================================
+
     const response = await openai.responses.create({
       model: "gpt-5.6-luna",
+
       instructions: `
 You are the AI shopping assistant for a professional Biscuit Shop e-commerce website.
 
@@ -60,39 +81,70 @@ Rules:
 - Do not invent discounts.
 - If product information is unavailable, clearly say so.
 `,
+
       input: message.trim(),
     });
 
     // ============================================================
-    // SERVER-SIDE AI RESPONSE LOG
+    // GET AI RESPONSE
     // ============================================================
-    console.log("FULL AI RESPONSE:");
-    console.dir(response, { depth: null });
-    console.log("========================================");
-    console.log("🤖 AI RESPONSE");
-    console.log("========================================");
-    console.log(response.output_text);
-    console.log("========================================");
 
-    const aiMessage = response.output_text?.trim();
+    const aiMessage = response?.output_text?.trim();
 
     if (!aiMessage) {
+      console.error("OpenAI returned an empty response.");
+      console.dir(response, { depth: null });
+
       return res.status(502).json({
         success: false,
         message: "AI did not return a response.",
       });
     }
 
+    // ============================================================
+    // SERVER-SIDE RESPONSE LOG
+    // ============================================================
+
+    console.log("========================================");
+    console.log("🤖 AI RESPONSE");
+    console.log("========================================");
+    console.log(aiMessage);
+    console.log("========================================");
+
+    // ============================================================
+    // SUCCESS RESPONSE
+    // ============================================================
+
     return res.status(200).json({
       success: true,
       message: aiMessage,
     });
   } catch (error) {
-    console.error("AI Chat Error:", error);
+    // ============================================================
+    // ERROR LOG
+    // ============================================================
+
+    console.error("========================================");
+    console.error("AI CHAT ERROR");
+    console.error("========================================");
+
+    console.error("Message:", error?.message);
+    console.error("Status:", error?.status);
+    console.error("Code:", error?.code);
+    console.error("Type:", error?.type);
+
+    console.error("Full Error:");
+    console.dir(error, { depth: null });
+
+    console.error("========================================");
+
+    // ============================================================
+    // OPENAI ERROR RESPONSE
+    // ============================================================
 
     return res.status(500).json({
       success: false,
-      message: "AI service is currently unavailable.",
+      message: error?.message || "AI service is currently unavailable.",
     });
   }
 });
