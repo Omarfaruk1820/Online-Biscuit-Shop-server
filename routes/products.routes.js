@@ -6,11 +6,7 @@ import { ObjectId } from "mongodb";
 // ============================================================
 
 const normalizeString = (value = "") => {
-  if (typeof value !== "string") {
-    return String(value ?? "").trim();
-  }
-
-  return value.trim();
+  return String(value ?? "").trim();
 };
 
 const normalizeEmail = (value = "") => {
@@ -21,22 +17,22 @@ const normalizeCategory = (value = "") => {
   return normalizeString(value).toLowerCase();
 };
 
+const cleanImage = (value = "") => {
+  return normalizeString(value).replace(/[\[\]()]/g, "");
+};
+
 const escapeRegex = (value = "") => {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 };
 
-const cleanImage = (value = "") => {
-  if (typeof value !== "string") {
-    return "";
-  }
-
-  return value.replace(/[\[\]()]/g, "").trim();
-};
-
-const toNumber = (value, fallback = 0) => {
+const toNumber = (value, fallback = NaN) => {
   const number = Number(value);
 
   return Number.isFinite(number) ? number : fallback;
+};
+
+const roundNumber = (value, decimals = 2) => {
+  return Number(Number(value).toFixed(decimals));
 };
 
 // ============================================================
@@ -83,26 +79,17 @@ const productsRoutes = (
 
   router.get("/", async (req, res) => {
     try {
-      // --------------------------------------------------------
-      // PAGINATION
-      // --------------------------------------------------------
+      const pageValue = Number.parseInt(req.query.page, 10);
+      const limitValue = Number.parseInt(req.query.limit, 10);
 
-      const parsedPage = Number.parseInt(req.query.page, 10);
-      const parsedLimit = Number.parseInt(req.query.limit, 10);
-
-      const page =
-        Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+      const page = Number.isInteger(pageValue) && pageValue > 0 ? pageValue : 1;
 
       const limit =
-        Number.isInteger(parsedLimit) && parsedLimit > 0
-          ? Math.min(parsedLimit, 20)
+        Number.isInteger(limitValue) && limitValue > 0
+          ? Math.min(limitValue, 20)
           : 8;
 
       const skip = (page - 1) * limit;
-
-      // --------------------------------------------------------
-      // FILTERS
-      // --------------------------------------------------------
 
       const search =
         typeof req.query.search === "string" ? req.query.search.trim() : "";
@@ -127,10 +114,6 @@ const productsRoutes = (
         query.category = category;
       }
 
-      // --------------------------------------------------------
-      // DATABASE QUERY
-      // --------------------------------------------------------
-
       const [products, total] = await Promise.all([
         productsCollection
           .find(query)
@@ -142,19 +125,7 @@ const productsRoutes = (
         productsCollection.countDocuments(query),
       ]);
 
-      // --------------------------------------------------------
-      // PAGINATION
-      // --------------------------------------------------------
-
       const totalPages = total > 0 ? Math.ceil(total / limit) : 0;
-
-      const hasNextPage = totalPages > 0 && page < totalPages;
-
-      const hasPrevPage = page > 1;
-
-      // --------------------------------------------------------
-      // RESPONSE
-      // --------------------------------------------------------
 
       return res.status(200).json({
         success: true,
@@ -164,8 +135,8 @@ const productsRoutes = (
           limit,
           total,
           totalPages,
-          hasNextPage,
-          hasPrevPage,
+          hasNextPage: page < totalPages,
+          hasPrevPage: page > 1,
         },
       });
     } catch (error) {
@@ -187,20 +158,12 @@ const productsRoutes = (
     try {
       const { id } = req.params;
 
-      // --------------------------------------------------------
-      // VALIDATE ID
-      // --------------------------------------------------------
-
       if (!ObjectId.isValid(id)) {
         return res.status(400).json({
           success: false,
           message: "Invalid product ID.",
         });
       }
-
-      // --------------------------------------------------------
-      // FIND PRODUCT
-      // --------------------------------------------------------
 
       const product = await productsCollection.findOne({
         _id: new ObjectId(id),
@@ -212,10 +175,6 @@ const productsRoutes = (
           message: "Product not found.",
         });
       }
-
-      // --------------------------------------------------------
-      // RESPONSE
-      // --------------------------------------------------------
 
       return res.status(200).json({
         success: true,
@@ -277,7 +236,7 @@ const productsRoutes = (
         // PRICE
         // ------------------------------------------------------
 
-        const productPrice = toNumber(price, NaN);
+        const productPrice = toNumber(price);
 
         if (!Number.isFinite(productPrice) || productPrice < 0) {
           return res.status(400).json({
@@ -290,7 +249,7 @@ const productsRoutes = (
         // STOCK
         // ------------------------------------------------------
 
-        const productStock = toNumber(stock, NaN);
+        const productStock = toNumber(stock);
 
         if (
           !Number.isFinite(productStock) ||
@@ -307,7 +266,7 @@ const productsRoutes = (
         // RATING
         // ------------------------------------------------------
 
-        const productRating = toNumber(rating, 4.5);
+        const productRating = toNumber(rating);
 
         if (
           !Number.isFinite(productRating) ||
@@ -324,7 +283,7 @@ const productsRoutes = (
         // REVIEWS
         // ------------------------------------------------------
 
-        const productReviews = toNumber(reviews, 0);
+        const productReviews = toNumber(reviews);
 
         if (
           !Number.isFinite(productReviews) ||
@@ -341,7 +300,7 @@ const productsRoutes = (
         // DISCOUNT
         // ------------------------------------------------------
 
-        const productDiscount = toNumber(discount, 0);
+        const productDiscount = toNumber(discount);
 
         if (
           !Number.isFinite(productDiscount) ||
@@ -367,40 +326,27 @@ const productsRoutes = (
         const now = new Date();
 
         // ------------------------------------------------------
-        // PRODUCT DOCUMENT
+        // PRODUCT
         // ------------------------------------------------------
 
         const newProduct = {
           name: productName,
-
-          price: Number(productPrice.toFixed(2)),
-
+          price: roundNumber(productPrice, 2),
           stock: productStock,
-
           image: cleanImage(image),
-
-          rating: Number(productRating.toFixed(1)),
-
-          reviews: productReviews,
-
+          rating: roundNumber(productRating, 1),
           category: productCategory,
-
+          reviews: productReviews,
           brand: normalizeString(brand),
-
           weight: normalizeString(weight),
-
           description: normalizeString(description),
-
           ingredients: normalizeString(ingredients),
-
           expiry: normalizeString(expiry),
-
-          discount: Number(productDiscount.toFixed(2)),
+          discount: roundNumber(productDiscount, 2),
 
           createdBy: normalizeEmail(req.user?.email),
 
           createdAt: now,
-
           updatedAt: now,
         };
 
@@ -481,11 +427,11 @@ const productsRoutes = (
 
         const updates = {};
 
-        for (const field of allowedFields) {
+        allowedFields.forEach((field) => {
           if (req.body?.[field] !== undefined) {
             updates[field] = req.body[field];
           }
-        }
+        });
 
         // ------------------------------------------------------
         // NAME
@@ -507,7 +453,7 @@ const productsRoutes = (
         // ------------------------------------------------------
 
         if (updates.price !== undefined) {
-          updates.price = toNumber(updates.price, NaN);
+          updates.price = toNumber(updates.price);
 
           if (!Number.isFinite(updates.price) || updates.price < 0) {
             return res.status(400).json({
@@ -516,7 +462,7 @@ const productsRoutes = (
             });
           }
 
-          updates.price = Number(updates.price.toFixed(2));
+          updates.price = roundNumber(updates.price, 2);
         }
 
         // ------------------------------------------------------
@@ -524,7 +470,7 @@ const productsRoutes = (
         // ------------------------------------------------------
 
         if (updates.stock !== undefined) {
-          updates.stock = toNumber(updates.stock, NaN);
+          updates.stock = toNumber(updates.stock);
 
           if (
             !Number.isFinite(updates.stock) ||
@@ -543,7 +489,7 @@ const productsRoutes = (
         // ------------------------------------------------------
 
         if (updates.rating !== undefined) {
-          updates.rating = toNumber(updates.rating, NaN);
+          updates.rating = toNumber(updates.rating);
 
           if (
             !Number.isFinite(updates.rating) ||
@@ -556,7 +502,7 @@ const productsRoutes = (
             });
           }
 
-          updates.rating = Number(updates.rating.toFixed(1));
+          updates.rating = roundNumber(updates.rating, 1);
         }
 
         // ------------------------------------------------------
@@ -564,7 +510,7 @@ const productsRoutes = (
         // ------------------------------------------------------
 
         if (updates.reviews !== undefined) {
-          updates.reviews = toNumber(updates.reviews, NaN);
+          updates.reviews = toNumber(updates.reviews);
 
           if (
             !Number.isFinite(updates.reviews) ||
@@ -583,7 +529,7 @@ const productsRoutes = (
         // ------------------------------------------------------
 
         if (updates.discount !== undefined) {
-          updates.discount = toNumber(updates.discount, NaN);
+          updates.discount = toNumber(updates.discount);
 
           if (
             !Number.isFinite(updates.discount) ||
@@ -596,7 +542,7 @@ const productsRoutes = (
             });
           }
 
-          updates.discount = Number(updates.discount.toFixed(2));
+          updates.discount = roundNumber(updates.discount, 2);
         }
 
         // ------------------------------------------------------
@@ -634,11 +580,11 @@ const productsRoutes = (
           "expiry",
         ];
 
-        for (const field of textFields) {
+        textFields.forEach((field) => {
           if (updates[field] !== undefined) {
             updates[field] = normalizeString(updates[field]);
           }
-        }
+        });
 
         // ------------------------------------------------------
         // CHECK UPDATE
@@ -654,7 +600,7 @@ const productsRoutes = (
         updates.updatedAt = new Date();
 
         // ------------------------------------------------------
-        // UPDATE DATABASE
+        // UPDATE
         // ------------------------------------------------------
 
         const result = await productsCollection.updateOne(
