@@ -102,7 +102,7 @@ Rules:
     }
 
     // ============================================================
-    // SERVER-SIDE RESPONSE LOG
+    // SERVER-SIDE AI RESPONSE LOG
     // ============================================================
 
     console.log("========================================");
@@ -133,18 +133,31 @@ Rules:
     console.error("Code:", error?.code);
     console.error("Type:", error?.type);
 
-    console.error("Full Error:");
-    console.dir(error, { depth: null });
-
     console.error("========================================");
 
     // ============================================================
-    // OPENAI ERROR RESPONSE
+    // API CREDIT / RATE LIMIT ERROR
+    // ============================================================
+
+    if (
+      error?.status === 429 ||
+      error?.code === "insufficient_quota" ||
+      error?.code === "billing_hard_limit_reached"
+    ) {
+      return res.status(429).json({
+        success: false,
+        code: "AI_USAGE_LIMIT",
+        message: "AI usage limit reached.",
+      });
+    }
+
+    // ============================================================
+    // OTHER OPENAI ERRORS
     // ============================================================
 
     return res.status(500).json({
       success: false,
-      message: error?.message || "AI service is currently unavailable.",
+      message: "AI service is currently unavailable.",
     });
   }
 });
